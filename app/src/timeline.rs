@@ -9,10 +9,22 @@ pub fn Timeline() -> impl IntoView {
     let app = app();
     let ruler = NodeRef::<leptos::html::Div>::new();
     let scrubbing = StoredValue::new(false);
-    let range = move || app.read(|e| (e.timeline.min, e.timeline.max, e.timeline.frame, e.timeline.fps, e.timeline.playing));
+    let range = move || {
+        app.read(|e| {
+            (
+                e.timeline.min,
+                e.timeline.max,
+                e.timeline.frame,
+                e.timeline.fps,
+                e.timeline.playing,
+            )
+        })
+    };
 
     let frame_at = move |x: f64| {
-        let Some(r) = ruler.get_untracked() else { return };
+        let Some(r) = ruler.get_untracked() else {
+            return;
+        };
         let rect = r.get_bounding_client_rect();
         let t = ((x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0);
         app.view(|e| {

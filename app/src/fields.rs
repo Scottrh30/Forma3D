@@ -6,7 +6,11 @@ use wasm_bindgen::JsCast;
 
 fn fmt(v: f32, decimals: usize) -> String {
     let s = format!("{v:.decimals$}");
-    if s == "-0" || s.starts_with("-0.") && s.trim_start_matches("-0.").chars().all(|c| c == '0') { s.trim_start_matches('-').to_owned() } else { s }
+    if s == "-0" || s.starts_with("-0.") && s.trim_start_matches("-0.").chars().all(|c| c == '0') {
+        s.trim_start_matches('-').to_owned()
+    } else {
+        s
+    }
 }
 
 /// A number with an optional coloured label (drag the label to change it).
@@ -24,7 +28,10 @@ pub fn NumField(
     let start = StoredValue::new((0.0f64, 0.0f32));
     let shown = move || fmt(scrub.get().unwrap_or_else(|| value.get()), decimals);
     let commit = move |text: String| {
-        let t: String = text.chars().filter(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E')).collect();
+        let t: String = text
+            .chars()
+            .filter(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E'))
+            .collect();
         if let Ok(v) = t.parse::<f32>()
             && v.is_finite()
         {
@@ -92,7 +99,11 @@ pub fn Toggle(#[prop(into)] on: Signal<bool>, on_change: Callback<bool>) -> impl
 }
 
 #[component]
-pub fn Choice(options: Vec<(String, String)>, #[prop(into)] value: Signal<String>, on_change: Callback<String>) -> impl IntoView {
+pub fn Choice(
+    options: Vec<(String, String)>,
+    #[prop(into)] value: Signal<String>,
+    on_change: Callback<String>,
+) -> impl IntoView {
     view! {
         <select class="sel" on:change=move |ev| on_change.run(event_target_value(&ev))>
             {options
@@ -116,6 +127,10 @@ pub fn parse_hex(s: &str) -> Option<[f32; 3]> {
     if s.len() != 6 {
         return None;
     }
-    let p = |i: usize| u8::from_str_radix(&s[i..i + 2], 16).ok().map(|v| v as f32 / 255.0);
+    let p = |i: usize| {
+        u8::from_str_radix(&s[i..i + 2], 16)
+            .ok()
+            .map(|v| v as f32 / 255.0)
+    };
     Some([p(0)?, p(2)?, p(4)?])
 }

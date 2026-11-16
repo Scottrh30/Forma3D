@@ -1,18 +1,23 @@
-//! The window's chrome: the title bar with its menus and command search, the
-//! toolbar, the mode palette, the status bar, and the dialogs.
+//! The window's chrome: the title bar with its menus, workspace tabs and
+//! command search, the toolbar, the mode palette, the status bar, the
+//! Commander and the dialogs.
 
-use crate::commands::{self, Cmd};
+use crate::commands::{self, Cmd, MESH_TOOLS, ViewFilter};
 use crate::host;
 use crate::icons::{icon, icon_s};
 use crate::state::app;
+use crate::workspace::{Panel, Workspace};
 use forma3d_core::camera::ViewKind;
 use forma3d_core::component::EditMode;
 use forma3d_core::deformer::DeformerKind;
+use forma3d_core::editor::ViewLayout;
 use forma3d_core::generator::GeneratorKind;
-use forma3d_core::gizmo::Tool;
+use forma3d_core::gizmo::{CoordSystem, Tool};
 use forma3d_core::light::LightKind;
+use forma3d_core::pen::PenKind;
 use forma3d_core::primitive::PrimitiveKind;
-use forma3d_core::renderer::DisplayMode;
+use forma3d_core::renderer::{DisplayMode, ViewFx};
+use forma3d_core::snap::{SnapKind, SnapMode};
 use leptos::prelude::*;
 
 #[derive(Clone)]
@@ -20,16 +25,68 @@ pub enum Entry {
     C(Cmd),
     Sep,
     Sub(&'static str, Vec<Entry>),
+    /// A control inside a menu: "snap-radius", "quantize", "projects", "layout".
+    Widget(&'static str),
 }
 
 fn cmds(list: impl IntoIterator<Item = Cmd>) -> Vec<Entry> {
     list.into_iter().map(Entry::C).collect()
 }
 
+fn snap_menu() -> Vec<Entry> {
+    use Entry::*;
+    let mut v = vec![C(Cmd::ToggleSnap), Sep];
+    v.extend(cmds(SnapMode::ALL.map(Cmd::SnapMode)));
+    v.push(Sep);
+    v.extend(cmds(SnapKind::ALL.map(Cmd::SnapTo)));
+    v.extend([Sep, Widget("snap-radius")]);
+    v
+}
+
+fn workplane_menu() -> Vec<Entry> {
+    use Entry::*;
+    let mut v = vec![C(Cmd::Mode(EditMode::Workplane)), Sep];
+    v.extend(cmds([0, 1, 2].map(Cmd::AlignWorkplane)));
+    v.extend([
+        C(Cmd::AlignWorkplaneToSelection),
+        C(Cmd::AlignSelectionToWorkplane),
+    ]);
+    v
+}
+
+pub fn mesh_menu() -> Vec<Entry> {
+    use Entry::*;
+    let mut v = vec![C(Cmd::MakeEditable), Sep, C(Cmd::Pen(PenKind::Polygon))];
+    v.extend(cmds(MESH_TOOLS.map(Cmd::MeshTool)));
+    v.push(Sep);
+    v.extend(cmds([
+        Cmd::Bridge,
+        Cmd::Weld,
+        Cmd::Optimize,
+        Cmd::SubdivideSmooth,
+        Cmd::SubdivideLinear,
+    ]));
+    v.push(Sep);
+    v.extend(cmds([Cmd::Delete, Cmd::SelectAll, Cmd::ReverseNormals]));
+    v
+}
+
 pub fn menu(name: &str) -> Vec<Entry> {
     use Entry::*;
     match name {
-        "File" => vec![C(Cmd::New), C(Cmd::Open), Sep, C(Cmd::Save), C(Cmd::SaveAs), C(Cmd::Revert), Sep, C(Cmd::Merge), Sep, C(Cmd::Quit)],
+        "File" => vec![
+            C(Cmd::New),
+            C(Cmd::Open),
+            C(Cmd::Close),
+            C(Cmd::Revert),
+            Sep,
+            C(Cmd::Save),
+            C(Cmd::SaveAs),
+            Sep,
+            C(Cmd::Merge),
+            Sep,
+            C(Cmd::Quit),
+        ],
         "Edit" => vec![
             C(Cmd::Undo),
             C(Cmd::Redo),
@@ -41,49 +98,244 @@ pub fn menu(name: &str) -> Vec<Entry> {
             Sep,
             C(Cmd::Duplicate),
             C(Cmd::Group),
+            Sep,
+            C(Cmd::Preferences),
+            C(Cmd::CustomizeCommands),
         ],
         "Create" => {
             let mut v = cmds(PrimitiveKind::ALL.map(Cmd::Primitive));
             v.push(Sep);
             v.push(C(Cmd::Null));
-            v.push(Sub("Generators", cmds(GeneratorKind::ALL.map(Cmd::Generator))));
+            v.push(C(Cmd::Pen(PenKind::Spline)));
+            v.push(Sub(
+                "Generators",
+                cmds(GeneratorKind::ALL.map(Cmd::Generator)),
+            ));
             v.push(Sub("Deformers", cmds(DeformerKind::ALL.map(Cmd::Deformer))));
             v.push(Sep);
             v.push(C(Cmd::NewMaterial));
             v
         }
         "Light" => cmds(LightKind::ALL.map(Cmd::Light)),
-        "Modes" => vec![C(Cmd::Mode(EditMode::Model)), C(Cmd::Mode(EditMode::Object)), Sep, C(Cmd::MakeEditable)],
-        "Select" => vec![C(Cmd::SelectAll), C(Cmd::Deselect), C(Cmd::InvertSelection), C(Cmd::SelectChildren)],
+        "Modes" => {
+            let mut v = cmds(EditMode::ALL.map(Cmd::Mode));
+            v.extend([
+                Sep,
+                C(Cmd::ToggleAxisMode),
+                C(Cmd::CenterAxis),
+                C(Cmd::ToggleTweak),
+                Sep,
+            ]);
+            v.push(Sub("Snapping", snap_menu()));
+            v.push(Sub(
+                "Quantizing",
+                vec![C(Cmd::ToggleQuantize), Sep, Widget("quantize")],
+            ));
+            v.push(Sub("Workplane", workplane_menu()));
+            v.extend([Sep, C(Cmd::MakeEditable), Sep, C(Cmd::ToggleCoordSystem)]);
+            v.extend(cmds([0, 1, 2].map(Cmd::ToggleAxis)));
+            v
+        }
+        "Select" => vec![
+            C(Cmd::SelectAll),
+            C(Cmd::DeselectAll),
+            C(Cmd::InvertSelection),
+            Sep,
+            C(Cmd::SelectChildren),
+            C(Cmd::LoopSelect),
+        ],
         "Tools" => {
             let mut v = cmds([Tool::Select, Tool::Move, Tool::Scale, Tool::Rotate].map(Cmd::Tool));
-            v.push(Sep);
-            v.extend(cmds([0, 1, 2].map(Cmd::ToggleAxis)));
-            v.push(C(Cmd::ToggleCoord));
-            v.push(Sep);
-            v.push(C(Cmd::ResetTransform));
-            v.push(C(Cmd::ToggleEnabled));
+            v.extend([
+                Sep,
+                C(Cmd::Pen(PenKind::Spline)),
+                C(Cmd::Pen(PenKind::Polygon)),
+                Sep,
+            ]);
+            v.extend(cmds(MESH_TOOLS.map(Cmd::MeshTool)));
+            v.extend([Sep, C(Cmd::ResetTransform), C(Cmd::ToggleEnabled)]);
             v
         }
-        "View" => {
-            let mut v = vec![C(Cmd::FrameAll), C(Cmd::FrameSelected), Sep];
+        "Mesh" => mesh_menu(),
+        "View" | "v-View" => {
+            let mut v = vec![
+                C(Cmd::FrameSelected),
+                C(Cmd::FrameAll),
+                C(Cmd::FrameDefault),
+                Sep,
+            ];
             v.extend(cmds(ViewKind::ALL.map(Cmd::Camera)));
+            v.push(C(Cmd::FourViews));
+            if name == "View" {
+                v.push(Sep);
+                v.extend(cmds(DisplayMode::ALL.map(Cmd::Display)));
+            }
+            v.extend([
+                Sep,
+                C(Cmd::ToggleGrid),
+                C(Cmd::ToggleCompass),
+                C(Cmd::ToggleSolo),
+            ]);
             v
         }
-        "Display" => cmds(DisplayMode::ALL.map(Cmd::Shading)),
-        "Options" => vec![C(Cmd::ToggleGrid)],
-        "Help" => vec![C(Cmd::Commander), Sep, C(Cmd::About)],
+        "v-Cameras" => cmds(ViewKind::ALL.map(Cmd::Camera)),
+        "v-Display" => vec![
+            C(Cmd::ToggleGrid),
+            C(Cmd::ToggleCompass),
+            C(Cmd::ToggleSolo),
+            Sep,
+            C(Cmd::ToggleTimeline),
+        ],
+        "v-Shading" => cmds(DisplayMode::ALL.map(Cmd::Display)),
+        "v-Options" => cmds(ViewFx::ALL.map(Cmd::ViewFx)),
+        "v-Filter" => {
+            let mut v = cmds(ViewFilter::ALL.map(Cmd::Filter));
+            v.extend([Sep, C(Cmd::ToggleGrid)]);
+            v
+        }
+        "v-Panel" => vec![Widget("layout")],
+        "Window" => {
+            let mut v = vec![C(Cmd::Commander), C(Cmd::CustomizeCommands), Sep];
+            let mut ws = cmds(Workspace::ALL.map(Cmd::Workspace));
+            ws.extend([Sep, C(Cmd::NextWorkspace), C(Cmd::PrevWorkspace)]);
+            v.push(Sub("Workspace", ws));
+            v.push(C(Cmd::ResetLayout));
+            v.push(Sub("Panels", cmds(Panel::OPENABLE.map(Cmd::ShowPanel))));
+            v.extend([Sep, C(Cmd::ToggleTimeline), Sep, Widget("projects")]);
+            v
+        }
+        "Help" => vec![
+            C(Cmd::Commander),
+            C(Cmd::CustomizeCommands),
+            Sep,
+            C(Cmd::About),
+        ],
         _ => vec![],
     }
 }
 
+/// Controls that live inside menus.
+fn widget(name: &'static str) -> AnyView {
+    let app = app();
+    match name {
+        "snap-radius" => view! {
+            <div class="mrow" on:click=|ev| ev.stop_propagation()>
+                "Radius"
+                <input
+                    class="text-in small"
+                    type="number"
+                    min="2"
+                    max="60"
+                    prop:value=move || app.read(|e| format!("{:.0}", e.snap.radius))
+                    on:change=move |ev| {
+                        let r: f32 = event_target_value(&ev).parse().unwrap_or(12.0);
+                        app.act(|e| e.snap.radius = r.clamp(2.0, 60.0));
+                    }
+                />
+                "px"
+            </div>
+        }
+        .into_any(),
+        "quantize" => {
+            let field = move |label: &'static str,
+                              unit: &'static str,
+                              get: fn(&forma3d_core::gizmo::Quantize) -> f32,
+                              set: fn(&mut forma3d_core::gizmo::Quantize, f32),
+                              lo: f32,
+                              hi: f32| {
+                view! {
+                    <div class="mrow" on:click=|ev| ev.stop_propagation()>
+                        <span style="width:54px">{label}</span>
+                        <input
+                            class="text-in small"
+                            type="number"
+                            prop:value=move || app.read(|e| format!("{}", get(&e.quantize)))
+                            on:change=move |ev| {
+                                if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                    app.act(|e| set(&mut e.quantize, v.clamp(lo, hi)));
+                                }
+                            }
+                        />
+                        {unit}
+                    </div>
+                }
+            };
+            view! {
+                {field("Move", "cm", |q| q.move_step, |q, v| q.move_step = v, 0.01, 10000.0)}
+                {field("Rotate", "°", |q| q.rotate_step, |q, v| q.rotate_step = v, 0.1, 180.0)}
+                {field("Scale", "%", |q| q.scale_step, |q, v| q.scale_step = v, 0.1, 500.0)}
+            }
+            .into_any()
+        }
+        "projects" => view! {
+            {move || {
+                let slot = app.slot.get();
+                app.project_names()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, n)| {
+                        view! {
+                            <div class="mi" on:click=move |_| {
+                                app.menu.set(None);
+                                app.switch_project(i);
+                            }>
+                                <span class="chk">{if i == slot { "●" } else { "" }}</span>
+                                <span class="ico">{icon_s("doc")}</span>
+                                {n}
+                            </div>
+                        }
+                    })
+                    .collect_view()
+            }}
+        }
+        .into_any(),
+        "layout" => {
+            let single = move || app.read(|e| e.layout == ViewLayout::Single);
+            view! {
+                <div class="mi" on:click=move |_| {
+                    let k = app.peek(|e| e.active_view);
+                    commands::run(app, Cmd::Camera(k));
+                }>
+                    <span class="chk">{move || if single() { "✓" } else { "" }}</span>
+                    <span class="ico">{icon_s("single")}</span>
+                    "Single View (the active view)"
+                </div>
+                <div class="mi" on:click=move |_| commands::run(app, Cmd::FourViews)>
+                    <span class="chk">{move || if single() { "" } else { "✓" }}</span>
+                    <span class="ico">{icon_s("quad")}</span>
+                    "4 Views"
+                    <span class="key">{move || app.keymap.with(|k| k.label(Cmd::FourViews))}</span>
+                </div>
+            }
+            .into_any()
+        }
+        _ => view! { <div></div> }.into_any(),
+    }
+}
+
+/// The name a menu shows for a command (Undo says what it undoes).
+fn menu_name(c: Cmd, ed: &forma3d_core::editor::Editor) -> String {
+    match c {
+        Cmd::Undo => ed
+            .history
+            .undo_label()
+            .map_or_else(|| "Undo".to_owned(), |l| format!("Undo {l}")),
+        Cmd::Redo => ed
+            .history
+            .redo_label()
+            .map_or_else(|| "Redo".to_owned(), |l| format!("Redo {l}")),
+        _ => commands::info(c).name,
+    }
+}
+
 #[component]
-fn MenuEntries(entries: Vec<Entry>) -> impl IntoView {
+pub fn MenuEntries(entries: Vec<Entry>) -> impl IntoView {
     let app = app();
     entries
         .into_iter()
         .map(|e| match e {
             Entry::Sep => view! { <div class="msep"></div> }.into_any(),
+            Entry::Widget(name) => widget(name),
             Entry::Sub(name, items) => view! {
                 <div class="sub">
                     <div class="mi"><span class="chk"></span><span class="ico"></span>{name}<span class="arrow">"›"</span></div>
@@ -94,6 +346,8 @@ fn MenuEntries(entries: Vec<Entry>) -> impl IntoView {
             Entry::C(c) => {
                 let info = commands::info(c);
                 let st = move || app.read(|ed| commands::state(c, ed, &app));
+                let name = move || app.read(|ed| menu_name(c, ed));
+                let key = move || app.keymap.with(|k| k.label(c));
                 view! {
                     <div
                         class="mi"
@@ -105,8 +359,8 @@ fn MenuEntries(entries: Vec<Entry>) -> impl IntoView {
                     >
                         <span class="chk">{move || if st().1 == Some(true) { "✓" } else { "" }}</span>
                         <span class="ico">{icon_s(info.icon)}</span>
-                        {info.label}
-                        <span class="key">{info.key}</span>
+                        {name}
+                        <span class="key">{key}</span>
                     </div>
                 }
                 .into_any()
@@ -115,9 +369,13 @@ fn MenuEntries(entries: Vec<Entry>) -> impl IntoView {
         .collect_view()
 }
 
-/// A menu button with its dropdown.
+/// A menu button with its dropdown. `name` identifies the menu; `label` is
+/// what it shows (the name when left out).
 #[component]
-pub fn MenuButton(name: &'static str) -> impl IntoView {
+pub fn MenuButton(
+    name: &'static str,
+    #[prop(optional)] label: Option<&'static str>,
+) -> impl IntoView {
     let app = app();
     let open = move || app.menu.get() == Some(name);
     view! {
@@ -135,7 +393,7 @@ pub fn MenuButton(name: &'static str) -> impl IntoView {
                     }
                 }
             >
-                {name}
+                {label.unwrap_or(name)}
             </button>
             <Show when=open>
                 <div class="dropdown" on:mousedown=|ev| ev.stop_propagation()>
@@ -151,13 +409,18 @@ pub fn TitleBar() -> impl IntoView {
     let app = app();
     let title = move || app.read(|e| e.project_name());
     let dirty = move || app.read(|e| e.is_dirty());
+    let count = move || {
+        app.rev.track();
+        app.project_count()
+    };
+    let key = move || app.keymap.with(|k| k.label(Cmd::Commander));
     view! {
         <div class="title" data-tauri-drag-region>
             <div class="logo">
                 <svg viewBox="0 0 24 24"><path d="M12 3 20 7.5v9L12 21 4 16.5v-9z" /><path d="M4 7.5 12 12l8-4.5M12 12v9" /></svg>
             </div>
             <div class="menus">
-                {["File", "Edit", "Create", "Light", "Modes", "Select", "Tools", "View", "Help"]
+                {["File", "Edit", "Create", "Light", "Modes", "Select", "Tools", "Mesh", "View", "Window", "Help"]
                     .into_iter()
                     .map(|n| view! { <MenuButton name=n /> })
                     .collect_view()}
@@ -166,12 +429,13 @@ pub fn TitleBar() -> impl IntoView {
                 <div class="search" on:click=move |_| app.commander.set(true)>
                     {icon_s("search")}
                     "Search commands"
-                    <kbd>"Shift C"</kbd>
+                    <kbd>{key}</kbd>
                 </div>
             </div>
+            <crate::workspace::WorkspaceTabs />
             <div class="proj" data-tauri-drag-region>
                 <b>{title}{move || if dirty() { " •" } else { "" }}</b>
-                " · Forma3D"
+                {move || if count() > 1 { format!(" · {} projects", count()) } else { String::new() }}
             </div>
             <Show when=host::in_tauri>
                 <button class="wbtn" title="Minimize" on:click=|_| host::window_call("minimize")>
@@ -188,12 +452,20 @@ pub fn TitleBar() -> impl IntoView {
     }
 }
 
-/// A toolbar button for a command, with a tooltip.
+/// A toolbar button for a command, with its name and shortcut as tooltip.
 #[component]
 pub fn CmdButton(cmd: Cmd) -> impl IntoView {
     let app = app();
     let info = commands::info(cmd);
-    let tip = if info.key.is_empty() { info.label.clone() } else { format!("{}  ({})", info.label, info.key) };
+    let name = info.name.clone();
+    let tip = move || {
+        let k = app.keymap.with(|k| k.label(cmd));
+        if k.is_empty() {
+            name.clone()
+        } else {
+            format!("{name}  ({k})")
+        }
+    };
     let st = move || app.read(|ed| commands::state(cmd, ed, &app));
     view! {
         <button
@@ -210,7 +482,12 @@ pub fn CmdButton(cmd: Cmd) -> impl IntoView {
 
 /// A toolbar button that opens a list of commands.
 #[component]
-pub fn DropButton(id: &'static str, icon_name: &'static str, title: &'static str, items: Vec<Cmd>) -> impl IntoView {
+pub fn DropButton(
+    id: &'static str,
+    icon_name: &'static str,
+    title: &'static str,
+    items: Vec<Cmd>,
+) -> impl IntoView {
     let app = app();
     let entries: Vec<Entry> = items.iter().copied().map(Entry::C).collect();
     let open = move || app.menu.get() == Some(id);
@@ -229,7 +506,7 @@ pub fn DropButton(id: &'static str, icon_name: &'static str, title: &'static str
                 <span class="more"></span>
             </button>
             <Show when=open>
-                <div class="dropdown" style="top:34px" on:mousedown=|ev| ev.stop_propagation()>
+                <div class="dropdown" style="top:34px" on:mousedown=|ev| ev.stop_propagation() on:click=move |_| app.menu.set(None)>
                     <MenuEntries entries=entries.clone() />
                 </div>
             </Show>
@@ -241,19 +518,21 @@ pub fn DropButton(id: &'static str, icon_name: &'static str, title: &'static str
 pub fn Toolbar() -> impl IntoView {
     let app = app();
     let axis = move |a: u8, color: &'static str, bg: &'static str| {
-        let on = move || app.read(|e| e.axes.get(forma3d_core::gizmo::Axis::ALL[a as usize]));
+        let on = move || app.read(|e| e.axes.0[a as usize]);
+        let tip = move || {
+            format!(
+                "Lock / unlock the {} axis ({})",
+                ["X", "Y", "Z"][a as usize],
+                app.keymap.with(|k| k.label(Cmd::ToggleAxis(a)))
+            )
+        };
         view! {
-            <button
-                class="axis"
-                class:on=on
-                style=format!("color:{color};background:{bg}")
-                title=format!("Lock / unlock the {} axis ({})", ["X", "Y", "Z"][a as usize], ["X", "Y", "Z"][a as usize])
-                on:click=move |_| commands::run(app, Cmd::ToggleAxis(a))
-            >
+            <button class="axis" class:on=on style=format!("color:{color};background:{bg}") title=tip on:click=move |_| commands::run(app, Cmd::ToggleAxis(a))>
                 {["X", "Y", "Z"][a as usize]}
             </button>
         }
     };
+    let world = move || app.read(|e| e.coord == CoordSystem::World);
     view! {
         <div class="toolbar">
             <div class="group">
@@ -265,41 +544,61 @@ pub fn Toolbar() -> impl IntoView {
                 <CmdButton cmd=Cmd::Tool(Tool::Move) />
                 <CmdButton cmd=Cmd::Tool(Tool::Scale) />
                 <CmdButton cmd=Cmd::Tool(Tool::Rotate) />
-                <CmdButton cmd=Cmd::ToggleCoord />
             </div>
             <div class="group">
                 {axis(0, "var(--x)", "rgba(229,83,75,.16)")}
                 {axis(1, "var(--y)", "rgba(87,171,90,.16)")}
                 {axis(2, "var(--z)", "rgba(83,155,245,.16)")}
+                <button
+                    class="tb"
+                    title=move || if world() { "Coordinate system: World (click for Object)" } else { "Coordinate system: Object (click for World)" }
+                    on:click=move |_| commands::run(app, Cmd::ToggleCoordSystem)
+                >
+                    {move || if world() { icon("world") } else { icon("local") }}
+                </button>
             </div>
             <div class="group">
                 <CmdButton cmd=Cmd::Primitive(PrimitiveKind::Cube) />
                 <DropButton id="tb-shapes" icon_name="sphere" title="Shapes" items=PrimitiveKind::ALL.map(Cmd::Primitive).to_vec() />
-                <CmdButton cmd=Cmd::Null />
+                <DropButton id="tb-pens" icon_name="pen" title="Spline Pen and Polygon Pen" items=vec![Cmd::Pen(PenKind::Spline), Cmd::Pen(PenKind::Polygon)] />
+                <CmdButton cmd=Cmd::Generator(GeneratorKind::Subdivision) />
                 <DropButton id="tb-gen" icon_name="generator" title="Generators" items=GeneratorKind::ALL.map(Cmd::Generator).to_vec() />
-                <DropButton id="tb-def" icon_name="deformer" title="Deformers" items=DeformerKind::ALL.map(Cmd::Deformer).to_vec() />
+                <DropButton id="tb-def" icon_name="deformer" title="Deformers (added under the selected object)" items=DeformerKind::ALL.map(Cmd::Deformer).to_vec() />
                 <DropButton id="tb-light" icon_name="light" title="Lights" items=LightKind::ALL.map(Cmd::Light).to_vec() />
+                <CmdButton cmd=Cmd::Null />
             </div>
             <div class="group">
                 <CmdButton cmd=Cmd::Duplicate />
                 <CmdButton cmd=Cmd::Group />
                 <CmdButton cmd=Cmd::Delete />
             </div>
+            <div class="group">
+                <CmdButton cmd=Cmd::ToggleSolo />
+            </div>
         </div>
     }
 }
 
+/// The vertical palette on the left: modes, axis / tweak / snap / quantize,
+/// and in component modes the mesh tools.
 #[component]
 pub fn Palette() -> impl IntoView {
+    let app = app();
+    let component = move || app.read(|e| e.mode.is_component());
     view! {
         <div class="panel palette">
             <CmdButton cmd=Cmd::MakeEditable />
             <div class="vsep"></div>
-            <CmdButton cmd=Cmd::Mode(EditMode::Model) />
-            <CmdButton cmd=Cmd::Mode(EditMode::Object) />
+            {EditMode::ALL.map(|m| view! { <CmdButton cmd=Cmd::Mode(m) /> }).collect_view()}
             <div class="vsep"></div>
-            <CmdButton cmd=Cmd::FrameAll />
-            <CmdButton cmd=Cmd::FrameSelected />
+            <CmdButton cmd=Cmd::ToggleAxisMode />
+            <CmdButton cmd=Cmd::ToggleTweak />
+            <CmdButton cmd=Cmd::ToggleSnap />
+            <CmdButton cmd=Cmd::ToggleQuantize />
+            <Show when=component>
+                <div class="vsep"></div>
+                {MESH_TOOLS.map(|t| view! { <CmdButton cmd=Cmd::MeshTool(t) /> }).collect_view()}
+            </Show>
         </div>
     }
 }
@@ -311,9 +610,27 @@ pub fn StatusBar() -> impl IntoView {
     let msg = move || app.read(|e| e.status.clone());
     let counts = move || {
         app.read(|e| {
-            let mut n = 0;
-            e.scene.walk(|_, _| n += 1);
-            format!("{n} objects · {} selected", e.selection.len())
+            if e.mode.is_component() && e.edit_target().is_some() {
+                format!(
+                    "{} mode · {} selected",
+                    e.mode.label(),
+                    e.comp.count(e.mode)
+                )
+            } else {
+                format!("{} objects · {} selected", e.scene.len(), e.selection.len())
+            }
+        })
+    };
+    // Waiting for the second key of a sequence: what can follow.
+    let prefix = move || {
+        app.prefix.get().map(|(first, _)| {
+            let names: Vec<String> = app
+                .keymap
+                .with(|k| k.completions(first))
+                .into_iter()
+                .map(|(k, c)| format!("{} {}", k.label(), commands::info(c).name))
+                .collect();
+            (format!("{}~", first.label()), names.join("   ·   "))
         })
     };
     view! {
@@ -322,7 +639,10 @@ pub fn StatusBar() -> impl IntoView {
                 <i class="dot" class:dirty=dirty></i>
                 {move || if dirty() { "Unsaved changes" } else { "Saved" }}
             </span>
-            <span class="msg">{msg}</span>
+            {move || match prefix() {
+                Some((k, rest)) => view! { <span class="msg"><b class="pfx">{k}</b>" "{rest}</span> }.into_any(),
+                None => view! { <span class="msg">{msg}</span> }.into_any(),
+            }}
             <span class="r">{counts}</span>
         </div>
     }
@@ -344,18 +664,26 @@ pub fn Commander() -> impl IntoView {
             }
         }
     });
-    let results = move || {
-        let q = query.get().to_lowercase();
-        let words: Vec<&str> = q.split_whitespace().collect();
-        commands::all()
+    let results = move || -> Vec<commands::Info> {
+        let q = query.get();
+        let mut all: Vec<commands::Info> = commands::infos().to_vec();
+        all.extend(app.read(commands::dynamic));
+        if q.trim().is_empty() {
+            // Recent commands first, then everything in menu order.
+            let recent = app.recent.get();
+            let mut out: Vec<commands::Info> = recent
+                .iter()
+                .filter_map(|c| all.iter().find(|i| i.cmd == *c).cloned())
+                .collect();
+            out.extend(all.into_iter().filter(|i| !recent.contains(&i.cmd)));
+            out.truncate(60);
+            return out;
+        }
+        commands::search(&all, &q)
             .into_iter()
-            .filter(|c| {
-                let i = commands::info(*c);
-                let hay = format!("{} {}", i.label, i.category).to_lowercase();
-                words.iter().all(|w| hay.contains(w))
-            })
-            .take(40)
-            .collect::<Vec<_>>()
+            .take(60)
+            .cloned()
+            .collect()
     };
     let close = move || app.commander.set(false);
     let run = move |c: Cmd| {
@@ -368,7 +696,7 @@ pub fn Commander() -> impl IntoView {
                 <div class="commander" on:mousedown=|ev| ev.stop_propagation()>
                     <input
                         node_ref=input
-                        placeholder="Type a command (e.g. cube, frame all, undo)"
+                        placeholder="Type a command (e.g. cube, extrude, frame all, undo)"
                         prop:value=move || query.get()
                         on:input=move |ev| {
                             query.set(event_target_value(&ev));
@@ -386,7 +714,7 @@ pub fn Commander() -> impl IntoView {
                                     hl.update(|h| *h = h.saturating_sub(1));
                                 }
                                 "Enter" => {
-                                    if let Some(c) = results().get(hl.get_untracked()).copied() {
+                                    if let Some(c) = results().get(hl.get_untracked()).map(|i| i.cmd) {
                                         run(c);
                                     }
                                 }
@@ -401,13 +729,16 @@ pub fn Commander() -> impl IntoView {
                             results()
                                 .into_iter()
                                 .enumerate()
-                                .map(|(k, c)| {
-                                    let i = commands::info(c);
+                                .map(|(k, i)| {
+                                    let c = i.cmd;
+                                    let (enabled, checked) = app.read(|ed| commands::state(c, ed, &app));
+                                    let key = app.keymap.with(|km| km.label(c));
                                     view! {
-                                        <div class="mi" class:hl=move || hl.get() == k on:mouseenter=move |_| hl.set(k) on:click=move |_| run(c)>
+                                        <div class="mi" class:hl=move || hl.get() == k class:off=!enabled on:mouseenter=move |_| hl.set(k) on:click=move |_| run(c)>
+                                            <span class="chk">{if checked == Some(true) { "✓" } else { "" }}</span>
                                             <span class="ico">{icon_s(i.icon)}</span>
-                                            {i.label}
-                                            <span class="cat">{i.category}{if i.key.is_empty() { String::new() } else { format!(" · {}", i.key) }}</span>
+                                            {i.name.clone()}
+                                            <span class="cat">{i.category}{if key.is_empty() { String::new() } else { format!(" · {key}") }}</span>
                                         </div>
                                     }
                                 })
@@ -451,6 +782,7 @@ pub fn Dialogs() -> impl IntoView {
                         "A 3D modelling app written in Rust, with a Leptos interface in a Tauri window. Version "
                         {env!("CARGO_PKG_VERSION")} "."
                     </p>
+                    <p class="hint">"Original code; no Blender or Cinema 4D source, assets or branding."</p>
                     <p class="hint">{move || format!("Graphics: {}", app.gpu_name.get())}</p>
                     <div class="btns">
                         <button class="btn primary" on:click=move |_| app.about.set(false)>"Close"</button>
@@ -458,6 +790,7 @@ pub fn Dialogs() -> impl IntoView {
                 </div>
             </div>
         </Show>
+        <crate::prefs::PrefsDialog />
+        <crate::customize::Customize />
     }
 }
-

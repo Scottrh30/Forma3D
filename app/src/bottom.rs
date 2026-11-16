@@ -4,25 +4,49 @@ use crate::commands::{self, Cmd};
 use crate::fields::{NumField, parse_hex, rgb_hex};
 use crate::icons::icon_s;
 use crate::objects::rgb;
-use crate::state::{BottomTab, app};
+use crate::state::app;
 use forma3d_core::assets::{Content, builtin};
 use forma3d_core::scene::MaterialId;
 use leptos::prelude::*;
 
 fn ball(c: [f32; 3]) -> String {
-    let hi = [(c[0] + 0.55).min(1.0), (c[1] + 0.55).min(1.0), (c[2] + 0.55).min(1.0)];
+    let hi = [
+        (c[0] + 0.55).min(1.0),
+        (c[1] + 0.55).min(1.0),
+        (c[2] + 0.55).min(1.0),
+    ];
     let lo = [c[0] * 0.45, c[1] * 0.45, c[2] * 0.45];
     let dk = [c[0] * 0.18, c[1] * 0.18, c[2] * 0.18];
-    format!("background:radial-gradient(circle at 34% 30%, {} 0, {} 24%, {} 64%, {} 100%)", rgb(hi), rgb(c), rgb(lo), rgb(dk))
+    format!(
+        "background:radial-gradient(circle at 34% 30%, {} 0, {} 24%, {} 64%, {} 100%)",
+        rgb(hi),
+        rgb(c),
+        rgb(lo),
+        rgb(dk)
+    )
 }
 
 #[component]
-fn Materials() -> impl IntoView {
+pub fn Materials() -> impl IntoView {
     let app = app();
     let renaming = RwSignal::new(None::<MaterialId>);
-    let mats = move || app.read(|e| e.scene.materials().iter().map(|m| (m.id, m.name.clone(), m.color)).collect::<Vec<_>>());
+    let mats = move || {
+        app.read(|e| {
+            e.scene
+                .materials()
+                .iter()
+                .map(|m| (m.id, m.name.clone(), m.color))
+                .collect::<Vec<_>>()
+        })
+    };
     let selected = move || app.read(|e| e.selected_material);
-    let sel_color = move || app.read(|e| e.selected_material.and_then(|m| e.scene.material(m)).map(|m| m.color));
+    let sel_color = move || {
+        app.read(|e| {
+            e.selected_material
+                .and_then(|m| e.scene.material(m))
+                .map(|m| m.color)
+        })
+    };
     view! {
         <div class="content">
             <div class="mats">
@@ -124,7 +148,7 @@ fn Materials() -> impl IntoView {
 }
 
 #[component]
-fn Assets() -> impl IntoView {
+pub fn Assets() -> impl IntoView {
     let app = app();
     let lib = StoredValue::new_local(builtin());
     let search = RwSignal::new(String::new());
@@ -142,7 +166,9 @@ fn Assets() -> impl IntoView {
                             let mut ic = "group";
                             let mut found = false;
                             s.walk(|o, _| {
-                                if !found && !matches!(o.kind, forma3d_core::scene::ObjectKind::Null) {
+                                if !found
+                                    && !matches!(o.kind, forma3d_core::scene::ObjectKind::Null)
+                                {
                                     ic = crate::icons::for_kind(&o.kind);
                                     found = true;
                                 }
@@ -157,7 +183,9 @@ fn Assets() -> impl IntoView {
     };
     let insert = move |i: usize| {
         let content = lib.with_value(|l| l.get(i).map(|a| (a.name.clone(), a.content.clone())));
-        let Some((name, content)) = content else { return };
+        let Some((name, content)) = content else {
+            return;
+        };
         app.act(|e| match content {
             Content::Scene(s) => {
                 let ids = e.paste(&s);
@@ -204,7 +232,7 @@ fn Assets() -> impl IntoView {
 }
 
 #[component]
-fn Console() -> impl IntoView {
+pub fn Console() -> impl IntoView {
     let app = app();
     let line = RwSignal::new(String::new());
     let run_line = move |text: String| {
@@ -221,26 +249,20 @@ fn Console() -> impl IntoView {
             app.log_line("Type a command's name to run it (\"cube\", \"frame all\", \"undo\"); \"clear\" empties the log.", false);
             return;
         }
-        let words: Vec<&str> = t.split_whitespace().collect();
-        let hits: Vec<Cmd> = commands::all()
-            .into_iter()
-            .filter(|c| {
-                let l = commands::info(*c).label.to_lowercase();
-                l == t || words.iter().all(|w| l.contains(w))
-            })
-            .collect();
-        let exact = hits.iter().copied().find(|c| commands::info(*c).label.to_lowercase() == t);
+        let all = commands::infos();
+        let exact = all.iter().find(|i| i.name.to_lowercase() == t);
+        let hits = commands::search(all, &t);
         match (exact, hits.len()) {
-            (Some(_), _) | (None, 1) => {
-                let c = exact.unwrap_or(hits[0]);
-                app.log_line(format!("running {}", commands::info(c).label), false);
-                commands::run(app, c);
+            (Some(i), _) => {
+                app.log_line(format!("running {}", i.name), false);
+                commands::run(app, i.cmd);
             }
             (None, 0) => app.log_line(format!("no command matches \"{}\"", text.trim()), true),
-            (None, n) => app.log_line(
-                format!("{n} commands match: {}", hits.iter().take(6).map(|c| commands::info(*c).label).collect::<Vec<_>>().join(", ")),
-                true,
-            ),
+            (None, _) => {
+                let best = hits[0];
+                app.log_line(format!("running {}", best.name), false);
+                commands::run(app, best.cmd);
+            }
         }
     };
     view! {
@@ -285,11 +307,10 @@ fn Console() -> impl IntoView {
 }
 
 #[component]
-fn Coordinates() -> impl IntoView {
+pub fn Coordinates() -> impl IntoView {
     let app = app();
     let active = move || app.read(|e| e.active());
     view! {
-        <div class="tabs"><div class="tab on">"Coordinates"</div></div>
         <div class="content">
             {move || match active() {
                 None => view! { <div class="empty">"Select an object"</div> }.into_any(),
@@ -334,32 +355,3 @@ fn Coordinates() -> impl IntoView {
         </div>
     }
 }
-
-#[component]
-pub fn Bottom() -> impl IntoView {
-    let app = app();
-    let tab = app.bottom;
-    let t = move |which: BottomTab, label: &'static str| {
-        view! { <div class="tab" class:on=move || tab.get() == which on:click=move |_| tab.set(which)>{label}</div> }
-    };
-    view! {
-        <div class="bottom">
-            <div class="panel">
-                <div class="tabs">
-                    {t(BottomTab::Materials, "Materials")}
-                    {t(BottomTab::Assets, "Asset Browser")}
-                    {t(BottomTab::Console, "Console")}
-                </div>
-                {move || match tab.get() {
-                    BottomTab::Materials => view! { <Materials /> }.into_any(),
-                    BottomTab::Assets => view! { <Assets /> }.into_any(),
-                    BottomTab::Console => view! { <Console /> }.into_any(),
-                }}
-            </div>
-            <div class="panel">
-                <Coordinates />
-            </div>
-        </div>
-    }
-}
-

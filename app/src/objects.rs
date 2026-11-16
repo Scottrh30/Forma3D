@@ -21,10 +21,16 @@ struct Row {
     vis: (Visibility, Visibility),
     dimmed: bool,
     material: Option<[f32; 3]>,
+    layer: Option<([f32; 3], String)>,
 }
 
 pub fn rgb(c: [f32; 3]) -> String {
-    format!("rgb({},{},{})", (c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8)
+    format!(
+        "rgb({},{},{})",
+        (c[0] * 255.0) as u8,
+        (c[1] * 255.0) as u8,
+        (c[2] * 255.0) as u8
+    )
 }
 
 fn vis_class(v: Visibility) -> &'static str {
@@ -44,7 +50,12 @@ pub fn ObjectManager() -> impl IntoView {
     let rows = move || {
         app.read(|ed| {
             let mut out = Vec::new();
-            fn walk(ed: &forma3d_core::editor::Editor, parent: Option<ObjectId>, depth: usize, out: &mut Vec<Row>) {
+            fn walk(
+                ed: &forma3d_core::editor::Editor,
+                parent: Option<ObjectId>,
+                depth: usize,
+                out: &mut Vec<Row>,
+            ) {
                 for &id in ed.scene.children_of(parent) {
                     if !ed.scene.in_manager(id) {
                         continue;
@@ -64,7 +75,14 @@ pub fn ObjectManager() -> impl IntoView {
                         enabled: o.enabled,
                         vis: (o.vis_editor, o.vis_render),
                         dimmed: !ed.scene.editor_visible(id),
-                        material: o.material.and_then(|m| ed.scene.material(m)).map(|m| m.color),
+                        material: o
+                            .material
+                            .and_then(|m| ed.scene.material(m))
+                            .map(|m| m.color),
+                        layer: o
+                            .layer
+                            .and_then(|l| ed.scene.layer(l))
+                            .map(|l| (l.color, l.name.clone())),
                     });
                     if kids && open {
                         walk(ed, Some(id), depth + 1, out);
@@ -97,6 +115,8 @@ pub fn ObjectManager() -> impl IntoView {
                     drag_id.set_value(Some(id));
                     if let Some(dt) = ev.data_transfer() {
                         let _ = dt.set_data("text/plain", &id.to_string());
+                        // Lets the Layer Manager take objects dropped on a layer.
+                        let _ = dt.set_data("application/x-forma3d-object", &id.to_string());
                         dt.set_effect_allowed("move");
                     }
                 }
@@ -205,6 +225,9 @@ pub fn ObjectManager() -> impl IntoView {
                         }
                     }}
                 </span>
+                {r.layer.clone().map(|(c, n)| view! {
+                    <span class="ltag" title=format!("Layer: {n}") style=format!("background:{}", rgb(c))></span>
+                })}
                 {r.material.map(|c| view! {
                     <span class="mtag" title="Material" style=format!("background:radial-gradient(circle at 35% 30%, #fff8 0, {} 45%)", rgb(c))></span>
                 })}

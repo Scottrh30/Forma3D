@@ -2,7 +2,7 @@
 //! settings. Object settings are read straight from the engine's data, so
 //! every primitive, generator, deformer and light gets its fields.
 
-use crate::fields::{Choice, NumField, Toggle, rgb_hex, parse_hex};
+use crate::fields::{Choice, NumField, Toggle, parse_hex, rgb_hex};
 use crate::icons::icon_s;
 use crate::state::{AttrTab, app};
 use forma3d_core::scene::{ObjectId, ObjectKind, Visibility};
@@ -26,7 +26,9 @@ fn pretty(name: &str) -> String {
     name.split('_')
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -34,11 +36,22 @@ fn pretty(name: &str) -> String {
 
 fn unit_for(name: &str) -> &'static str {
     let n = name.to_lowercase();
-    if ["radius", "size", "height", "width", "length", "offset", "distance"].iter().any(|k| n.contains(k)) {
+    if [
+        "radius", "size", "height", "width", "length", "offset", "distance",
+    ]
+    .iter()
+    .any(|k| n.contains(k))
+    {
         "cm"
-    } else if ["angle", "direction", "rotation", "inner", "outer", "twist"].iter().any(|k| n.contains(k)) {
+    } else if ["angle", "direction", "rotation", "inner", "outer", "twist"]
+        .iter()
+        .any(|k| n.contains(k))
+    {
         "°"
-    } else if ["strength", "curvature", "intensity", "roughness"].iter().any(|k| n.contains(k)) {
+    } else if ["strength", "curvature", "intensity", "roughness"]
+        .iter()
+        .any(|k| n.contains(k))
+    {
         "%"
     } else {
         ""
@@ -51,13 +64,40 @@ fn options_for(v: &str) -> Option<Vec<String>> {
     use forma3d_core::generator::{ArrayMode, MirrorPlane};
     use forma3d_core::light::LightKind;
     use forma3d_core::spline::SplineType;
-    let names = |vals: Vec<Value>| vals.into_iter().filter_map(|v| v.as_str().map(str::to_owned)).collect::<Vec<_>>();
+    let names = |vals: Vec<Value>| {
+        vals.into_iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
     let sets = [
-        names(vec![serde_json::to_value(ArrayMode::Linear).ok()?, serde_json::to_value(ArrayMode::Radial).ok()?]),
-        names(MirrorPlane::ALL.iter().filter_map(|m| serde_json::to_value(m).ok()).collect()),
-        names(BoolMode::ALL.iter().filter_map(|m| serde_json::to_value(m).ok()).collect()),
-        names(LightKind::ALL.iter().filter_map(|m| serde_json::to_value(m).ok()).collect()),
-        names(SplineType::ALL.iter().filter_map(|m| serde_json::to_value(m).ok()).collect()),
+        names(vec![
+            serde_json::to_value(ArrayMode::Linear).ok()?,
+            serde_json::to_value(ArrayMode::Radial).ok()?,
+        ]),
+        names(
+            MirrorPlane::ALL
+                .iter()
+                .filter_map(|m| serde_json::to_value(m).ok())
+                .collect(),
+        ),
+        names(
+            BoolMode::ALL
+                .iter()
+                .filter_map(|m| serde_json::to_value(m).ok())
+                .collect(),
+        ),
+        names(
+            LightKind::ALL
+                .iter()
+                .filter_map(|m| serde_json::to_value(m).ok())
+                .collect(),
+        ),
+        names(
+            SplineType::ALL
+                .iter()
+                .filter_map(|m| serde_json::to_value(m).ok())
+                .collect(),
+        ),
     ];
     sets.into_iter().find(|s| s.iter().any(|x| x == v))
 }
@@ -75,10 +115,18 @@ fn object_json(k: &ObjectKind) -> Option<Value> {
 
 fn write_json(k: &mut ObjectKind, v: Value) -> bool {
     match k {
-        ObjectKind::Primitive(p) => serde_json::from_value::<forma3d_core::primitive::Primitive>(v).map(|n| *p = n.sanitized()).is_ok(),
-        ObjectKind::Generator(g) => serde_json::from_value::<forma3d_core::generator::Generator>(v).map(|n| *g = n.sanitized()).is_ok(),
-        ObjectKind::Deformer(d) => serde_json::from_value::<forma3d_core::deformer::Deformer>(v).map(|n| *d = n.sanitized()).is_ok(),
-        ObjectKind::Light(l) => serde_json::from_value::<forma3d_core::light::Light>(v).map(|n| *l = n.sanitized()).is_ok(),
+        ObjectKind::Primitive(p) => serde_json::from_value::<forma3d_core::primitive::Primitive>(v)
+            .map(|n| *p = n.sanitized())
+            .is_ok(),
+        ObjectKind::Generator(g) => serde_json::from_value::<forma3d_core::generator::Generator>(v)
+            .map(|n| *g = n.sanitized())
+            .is_ok(),
+        ObjectKind::Deformer(d) => serde_json::from_value::<forma3d_core::deformer::Deformer>(v)
+            .map(|n| *d = n.sanitized())
+            .is_ok(),
+        ObjectKind::Light(l) => serde_json::from_value::<forma3d_core::light::Light>(v)
+            .map(|n| *l = n.sanitized())
+            .is_ok(),
         _ => false,
     }
 }
@@ -97,7 +145,9 @@ fn set_field(id: ObjectId, key: String, slot: Option<usize>, new: Value) {
     let app = app();
     app.act(|e| {
         let Some(o) = e.scene.get_mut(id) else { return };
-        let Some(mut v) = object_json(&o.kind) else { return };
+        let Some(mut v) = object_json(&o.kind) else {
+            return;
+        };
         let Some(f) = fields_of(&mut v) else { return };
         match (slot, f.get_mut(&key)) {
             (Some(i), Some(Value::Array(a))) if i < a.len() => a[i] = new,
@@ -116,7 +166,9 @@ fn num_value(old: &Value, x: f64) -> Value {
     } else if old.is_i64() {
         Value::from(x.round() as i64)
     } else {
-        serde_json::Number::from_f64(x).map(Value::Number).unwrap_or(Value::Null)
+        serde_json::Number::from_f64(x)
+            .map(Value::Number)
+            .unwrap_or(Value::Null)
     }
 }
 
@@ -317,7 +369,11 @@ fn Basic(id: ObjectId) -> impl IntoView {
     let vis = |editor: bool| {
         Signal::derive(move || {
             app.read(|e| {
-                let v = e.scene.get(id).map(|o| if editor { o.vis_editor } else { o.vis_render }).unwrap_or_default();
+                let v = e
+                    .scene
+                    .get(id)
+                    .map(|o| if editor { o.vis_editor } else { o.vis_render })
+                    .unwrap_or_default();
                 format!("{v:?}")
             })
         })
@@ -341,15 +397,33 @@ fn Basic(id: ObjectId) -> impl IntoView {
             });
         })
     };
-    let vis_opts = || vec![("Default".to_owned(), "Default".to_owned()), ("On".to_owned(), "On".to_owned()), ("Off".to_owned(), "Off".to_owned())];
+    let vis_opts = || {
+        vec![
+            ("Default".to_owned(), "Default".to_owned()),
+            ("On".to_owned(), "On".to_owned()),
+            ("Off".to_owned(), "Off".to_owned()),
+        ]
+    };
     let mats = move || {
         app.read(|e| {
             let mut v = vec![("none".to_owned(), "None".to_owned())];
-            v.extend(e.scene.materials().iter().map(|m| (m.id.to_string(), m.name.clone())));
+            v.extend(
+                e.scene
+                    .materials()
+                    .iter()
+                    .map(|m| (m.id.to_string(), m.name.clone())),
+            );
             v
         })
     };
-    let mat = Signal::derive(move || app.read(|e| e.scene.get(id).and_then(|o| o.material).map_or("none".to_owned(), |m| m.to_string())));
+    let mat = Signal::derive(move || {
+        app.read(|e| {
+            e.scene
+                .get(id)
+                .and_then(|o| o.material)
+                .map_or("none".to_owned(), |m| m.to_string())
+        })
+    });
     let enabled = Signal::derive(move || app.read(|e| e.scene.get(id).is_some_and(|o| o.enabled)));
     view! {
         <div class="lbl">

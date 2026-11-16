@@ -22,5 +22,5 @@ web-sys = { version = "0.3", features = [
     "Window", "Location", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlInputElement",
     "DomRect", "PointerEvent", "MouseEvent", "WheelEvent", "KeyboardEvent", "Event", "EventTarget",
     "ResizeObserver", "ResizeObserverEntry", "CssStyleDeclaration", "Blob", "BlobPropertyBag", "Url",
-    "HtmlAnchorElement", "FileList", "File", "Performance", "DataTransfer", "DragEvent", "Navigator", "Clipboard",
+    "HtmlAnchorElement", "FileList", "File", "Performance", "DataTransfer", "DragEvent", "Navigator", "Clipboard", "Storage",
 ] }
