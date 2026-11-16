@@ -53,33 +53,21 @@ On a Windows PC without GitHub: install Rust, then run `build-windows.bat` to bu
 
 ## The Tauri + Leptos interface
 
-The layout follows the classic one: menus in a dark custom title bar (with the command search, Shift+C), the
-toolbar, a mode palette on the left, the 3D view with its timeline, the Object Manager and Attribute Manager on
-the right, and Materials / Asset Browser / Console beside Coordinates at the bottom.
+The Tauri app has everything the classic one has; the sections below describe the features (they work the same
+in both). Differences of detail:
 
-- **3D view:** right-drag (or Alt+left-drag) orbits, middle-drag pans, Alt+right-drag and the wheel zoom.
-  Click to select (Shift or Ctrl to add); with Move, Rotate or Scale, drag a gizmo handle, or anywhere to move
-  freely. Camera views (F1-F4), Frame All (H) and Frame Selected (S), five shading modes and the grid are in the
-  view's bar and menus.
-- **Menus:** File (New, Open, Save, Save As, Revert, Merge, Quit), Edit (Undo, Redo, Cut, Copy, Paste, Delete,
-  Duplicate, Group), Create (11 shapes, Null, generators, deformers, materials), Light (7 kinds), Modes, Select,
-  Tools, View, Help. Closing, New and Open ask before discarding unsaved changes.
-- **Object Manager:** the hierarchy with expand / collapse, click and Shift / Ctrl selection, double-click to
-  rename, drag onto an object to parent it (or onto empty space to unparent), editor / renderer visibility dots,
-  the on / off check, and material tags. Drag a material from the Materials panel onto an object to assign it.
-- **Attribute Manager:** Basic (name, visibility, enabled, material), Coord. (position, scale, rotation) and
-  Object, which shows every setting of the shape, generator, deformer or light. Drag a field's letter to scrub
-  its value (Shift for fine steps), or type a number.
-- **Materials:** new, rename (double-click), recolour, assign to the selection, delete. **Asset Browser:** the
-  built-in objects and materials, with search. **Console:** the log, and a line that runs commands by name.
-  **Coordinates:** world position, bounding-box size and rotation of the active object.
-- Most shortcuts match the classic app: Ctrl+N / O / S / Shift+S, Ctrl+Z / Y, Ctrl+X / C / V, Del, Ctrl+D,
-  Alt+G, Ctrl+A, E / R / T / 9 for the tools, X / Y / Z axis locks, W world / object, C Make Editable.
-
-Not in the new interface yet (use Forma3D-classic.exe meanwhile): point, edge and polygon editing and the mesh
-tools, the Spline and Polygon Pens, snapping, quantizing, the workplane and Axis modes, layers, takes, the
-Structure Manager, workspaces and dockable panels, four-view layout, multiple open projects, preferences and
-shortcut customization, and the viewport Options effects menu.
+- **Workspaces** (tabs at the top right: Model, Track, UV Edit, Animate, Sculpt, Custom) arrange the panels in
+  five tab groups around the viewport. Click a tab's × to close it, right-click a tab to move it to another
+  group, and use Window > Panels to open any panel again. Each workspace remembers its arrangement.
+- **Settings** (Preferences, shortcuts from Customize Commands, workspaces) are saved in the app's settings
+  folder; autosaves go to an `autosave` folder in the app's data folder. In a plain browser they go to the
+  page's local storage.
+- **Interface Scale** (Preferences) zooms the whole window.
+- **Four views:** F5, the Panel menu, the view bar or the HUD button; each view's corner button goes back to one.
+- The window's close button, Alt+F4 and the taskbar all ask before quitting with unsaved changes.
+- Right-click (without dragging) in the view for a Create menu, or the Mesh commands in component modes.
+- Not carried over: the customizable icon bar above the classic viewport (the Tauri toolbar is fixed) and the
+  Save Selection to Asset Browser command.
 
 ## What the engine and classic interface do
 
