@@ -134,10 +134,24 @@ fn Assets() -> impl IntoView {
             l.iter()
                 .enumerate()
                 .filter(|(_, a)| q.is_empty() || a.haystack().contains(&q))
-                .map(|(i, a)| (i, a.name.clone(), match &a.content {
-                    Content::Material(c) => Some(*c),
-                    Content::Scene(_) => None,
-                }))
+                .map(|(i, a)| {
+                    let (mat, ic) = match &a.content {
+                        Content::Material(c) => (Some(*c), "material"),
+                        Content::Scene(s) => {
+                            // The icon of the first real part.
+                            let mut ic = "group";
+                            let mut found = false;
+                            s.walk(|o, _| {
+                                if !found && !matches!(o.kind, forma3d_core::scene::ObjectKind::Null) {
+                                    ic = crate::icons::for_kind(&o.kind);
+                                    found = true;
+                                }
+                            });
+                            (None, ic)
+                        }
+                    };
+                    (i, a.name.clone(), mat, ic)
+                })
                 .collect::<Vec<_>>()
         })
     };
@@ -170,13 +184,13 @@ fn Assets() -> impl IntoView {
                 {move || {
                     shown()
                         .into_iter()
-                        .map(|(i, name, mat)| {
+                        .map(|(i, name, mat, ic)| {
                             let tip = format!("Add {name}");
                             view! {
                                 <div class="asset" title=tip on:click=move |_| insert(i)>
                                     {match mat {
                                         Some(c) => view! { <div class="sw" style=ball(c)></div> }.into_any(),
-                                        None => crate::icons::icon("group").into_any(),
+                                        None => crate::icons::icon(ic).into_any(),
                                     }}
                                     <small>{name}</small>
                                 </div>

@@ -203,15 +203,15 @@ fn ObjectFields(id: ObjectId) -> impl IntoView {
                                                     value=Signal::derive(move || x)
                                                     label=names[i]
                                                     color=["var(--x)", "var(--y)", "var(--z)"][i]
-                                                    unit=unit
-                                                    decimals=if int { 0 } else { 2 }
+                                                    decimals=if int { 0 } else { 1 }
                                                     on_change=Callback::new(move |nv: f32| set_field(id, key.clone(), Some(i), num_value(&old, nv as f64)))
                                                 />
                                             }
                                         })
                                         .collect_view();
+                                    let head = if unit.is_empty() { label } else { format!("{label} ({unit})") };
                                     view! {
-                                        <div class="sec">{label}</div>
+                                        <div class="sec">{head}</div>
                                         <div class="grid3">{cells}</div>
                                     }
                                     .into_any()
@@ -279,14 +279,14 @@ fn Coord(id: ObjectId) -> impl IntoView {
     };
     let names = [["X", "Y", "Z"], ["X", "Y", "Z"], ["H", "P", "B"]];
     let colors = ["var(--x)", "var(--y)", "var(--z)"];
-    let units = ["cm", "", "°"];
+    let heads = ["Position (cm)", "Scale", "Rotation (°)"];
     let decimals = [1usize, 3, 1];
     let steps = [1.0f32, 0.01, 0.5];
     view! {
         {(0..3)
             .map(|which| {
                 view! {
-                    <div class="sec">{["Position", "Scale", "Rotation"][which]}</div>
+                    <div class="sec">{heads[which]}</div>
                     <div class="grid3">
                         {(0..3)
                             .map(|i| view! {
@@ -294,7 +294,6 @@ fn Coord(id: ObjectId) -> impl IntoView {
                                     value=get(which, i)
                                     label=names[which][i]
                                     color=if which == 2 { "var(--text)" } else { colors[i] }
-                                    unit=units[which]
                                     decimals=decimals[which]
                                     step=steps[which]
                                     on_change=set(which, i)

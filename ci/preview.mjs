@@ -6,9 +6,13 @@ import fs from 'fs';
 
 const url = process.argv[2] || 'http://localhost:8080/';
 const out = process.argv[3] || 'preview';
+const webgpu = process.argv[4] === 'webgpu';
 fs.mkdirSync(out, { recursive: true });
 const log = [];
-const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-webgl'] });
+const args = webgpu
+  ? ['--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist']
+  : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-webgl', '--disable-features=WebGPU'];
+const browser = await chromium.launch({ args });
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });
 page.on('console', m => log.push(`[${m.type()}] ${m.text()}`));
 page.on('pageerror', e => log.push(`[pageerror] ${e.message}`));

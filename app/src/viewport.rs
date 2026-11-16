@@ -112,7 +112,8 @@ async fn init_gpu(canvas: web_sys::HtmlCanvasElement) -> Result<(Gpu, String), S
     let res = GpuResources::new(&device, format);
     let srgb = res.target_is_srgb;
     let depth = make_depth(&device, w, h);
-    let name = format!("{} ({})", info.name, if webgl { "WebGL 2" } else { "WebGPU" });
+    let short: String = info.name.split(" (").next().unwrap_or(&info.name).chars().take(48).collect();
+    let name = format!("{} · {short}", if webgl { "WebGL 2" } else { "WebGPU" });
     Ok((Gpu { device, queue, surface, config, depth, res, srgb }, name))
 }
 
