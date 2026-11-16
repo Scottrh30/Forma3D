@@ -791,7 +791,7 @@ pub fn Viewport() -> impl IntoView {
             // A right click (no drag): the context menu.
             if button == 2 && (m - start).length() < 4.0 {
                 let comp = app.peek(|ed| ed.mode.is_component());
-                ctx_menu.set(Some((m.x, m.y, comp)));
+                ctx_menu.set(Some((ev.client_x() as f32, ev.client_y() as f32, comp)));
             }
             return;
         }
@@ -939,7 +939,7 @@ pub fn Viewport() -> impl IntoView {
                             view! {
                                 <button
                                     class="tb vmax"
-                                    style=format!("left:{}px;top:{}px", r.min.x + r.size.x - 30.0, r.min.y + 6.0)
+                                    style=format!("left:{}px;top:{}px", r.min.x + r.size.x - 30.0, r.min.y + r.size.y - 28.0)
                                     title=format!("Show only the {} view", k.label())
                                     on:click=move |_| crate::commands::run(app, Cmd::Camera(k))
                                 >
@@ -965,7 +965,10 @@ pub fn Viewport() -> impl IntoView {
                 {move || ctx_menu.get().map(|(x, y, comp)| {
                     view! {
                         <div class="scrim" on:mousedown=move |_| ctx_menu.set(None)></div>
-                        <div class="dropdown ctx" style=format!("left:{x}px;top:{y}px") on:mousedown=|ev| ev.stop_propagation() on:click=move |_| ctx_menu.set(None)>
+                        <div class="dropdown fixed ctx" style=format!("left:{x}px;top:{}px;max-height:calc(100vh - 24px);overflow:auto", {
+                            let h = web_sys::window().and_then(|w| w.inner_height().ok()).and_then(|v| v.as_f64()).unwrap_or(1000.0) as f32;
+                            y.min((h - 440.0).max(8.0))
+                        }) on:mousedown=|ev| ev.stop_propagation() on:click=move |_| ctx_menu.set(None)>
                             <MenuEntries entries=context_entries(comp) />
                         </div>
                     }
