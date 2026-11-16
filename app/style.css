@@ -355,7 +355,7 @@ select.sel { height: 26px; border-radius: 6px; background: var(--bg3); border: 1
 .pv-b { position: absolute; inset: 0; margin: auto; }
 .pv-split { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--sel); pointer-events: none; }
 .pv-empty { margin: auto; padding: 24px; }
-.pv-list { width: 200px; flex: none; border-left: 1px solid var(--line); overflow: auto; background: var(--bg1); }
+.pv-list { width: clamp(110px, 30%, 200px); flex: none; border-left: 1px solid var(--line); overflow: auto; background: var(--bg1); }
 .pv-item { display: flex; gap: 6px; align-items: center; padding: 6px; border-bottom: 1px solid var(--line); }
 .pv-item:hover { background: var(--bg2); }
 .pv-item.sel { background: var(--accentbg); }
@@ -374,5 +374,5 @@ select.sel { height: 26px; border-radius: 6px; background: var(--bg3); border: 1
 .ll .ll-name { cursor: pointer; }
 .ll .num { max-width: 110px; }
 .dialog.rsettings { width: 560px; max-height: calc(100vh - 100px); margin-top: 50px; }
-.rs-body { overflow: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px; }
+.rs-body { overflow: auto; min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px; }
 .passes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 10px; }
