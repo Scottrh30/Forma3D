@@ -1,32 +1,87 @@
 # Forma3D
 
-A 3D modelling prototype in Rust (egui + wgpu) with a Cinema 4D-style workflow:
-dockable Object / Attribute / Material / Coordinates managers, a tool palette,
-a 3D viewport and move / rotate / scale gizmos with undo and redo.
+A 3D modelling app in Rust with a Cinema 4D-style workflow: Object / Attribute / Material / Coordinates
+managers, a 3D viewport with move / rotate / scale gizmos, primitives, generators, deformers, lights, booleans,
+editable meshes, and undo and redo.
 
-This is original code. It does not use any Blender source, and it uses no
-Cinema 4D code, icons or branding (all icons are drawn procedurally).
+This is original code. It does not use any Blender source, and it uses no Cinema 4D code, icons or branding.
+
+## Project layout
+
+| Folder | What it is |
+|---|---|
+| `core/` | **forma3d-core**: the engine. Scene, meshes and their tools, editor state with undo, and the wgpu viewport renderer. No interface code. |
+| `app/` | **forma3d-app**: the interface, written with [Leptos](https://leptos.dev) and compiled to WebAssembly together with the engine. The 3D view draws with WebGPU (WebGL 2 where WebGPU is missing). |
+| `src-tauri/` | **forma3d**: the [Tauri](https://tauri.app) desktop shell. It opens the window and does what a web page can't: native Open / Save dialogs and file access. |
+| `classic/` | **forma3d-classic**: the original egui interface. It still has everything the new interface hasn't caught up with yet (see below). |
 
 ## Run
 
-    cargo run --release
+The desktop app (Tauri + Leptos) needs the WebAssembly target, [Trunk](https://trunkrs.dev) and the Tauri CLI:
 
-Needs a Vulkan, Metal, DX12 or GL capable GPU driver. First build downloads and
-compiles egui/wgpu, so it takes a few minutes.
+    rustup target add wasm32-unknown-unknown
+    cargo install trunk
+    npx @tauri-apps/cli@2 dev        # live-reloading window
+    npx @tauri-apps/cli@2 build      # target/release/forma3d.exe and an installer
+
+The interface also runs in a browser with WebGPU or WebGL 2 (Chrome, Edge, Firefox): `cd app && trunk serve`,
+then open http://localhost:1420. There, Open and Save use the browser's upload and download.
+
+The classic egui app:
+
+    cargo run --release -p forma3d-classic
+
+Tests (engine and classic interface):
 
     cargo test        # 224 unit tests (scene, camera, gizmos, picking, history, generators, deformers, booleans, mesh editing, ...)
 
 ## Windows .exe
 
-- **On a Windows PC:** install Rust from https://rustup.rs (default options), then double-click
-  `build-windows.bat`. It builds a release version and puts it at `dist\Forma3D.exe`, a single file that runs
-  on its own (no console window). Settings, shortcuts, workspaces and saved assets go in `%APPDATA%\forma3d`.
-- **Without building it yourself:** every push to `main` is built and tested on GitHub's Windows machines
-  (`.github/workflows/windows.yml`) and published as the repository's latest release:
-  https://github.com/Scottrh30/forma3d/releases/latest/download/Forma3D.exe
-- Forma3D uses DirectX 12 or Vulkan on Windows through wgpu, so any graphics card from the last ten years works.
+Every push to `main` is built and tested on GitHub's Windows machines (`.github/workflows/windows.yml`) and
+published as the repository's latest release:
 
-## What works (milestone 1)
+- https://github.com/Scottrh30/forma3d/releases/latest/download/Forma3D.exe: the app. It runs as is; it
+  uses Microsoft Edge WebView2, which Windows 10 and 11 include.
+- https://github.com/Scottrh30/forma3d/releases/latest/download/Forma3D-setup.exe: installs it (and
+  WebView2, if a PC lacks it) with a Start menu entry.
+- https://github.com/Scottrh30/forma3d/releases/latest/download/Forma3D-classic.exe: the egui interface.
+
+A second job builds the web version, clicks through it in Chromium and publishes the screenshots and browser
+console as the "preview" release, so the interface can be checked without Windows.
+
+On a Windows PC without GitHub: install Rust, then run `build-windows.bat` to build the classic app.
+
+## The Tauri + Leptos interface
+
+The layout follows the classic one: menus in a dark custom title bar (with the command search, Shift+C), the
+toolbar, a mode palette on the left, the 3D view with its timeline, the Object Manager and Attribute Manager on
+the right, and Materials / Asset Browser / Console beside Coordinates at the bottom.
+
+- **3D view:** right-drag (or Alt+left-drag) orbits, middle-drag pans, Alt+right-drag and the wheel zoom.
+  Click to select (Shift or Ctrl to add); with Move, Rotate or Scale, drag a gizmo handle, or anywhere to move
+  freely. Camera views (F1-F4), Frame All (H) and Frame Selected (S), five shading modes and the grid are in the
+  view's bar and menus.
+- **Menus:** File (New, Open, Save, Save As, Revert, Merge, Quit), Edit (Undo, Redo, Cut, Copy, Paste, Delete,
+  Duplicate, Group), Create (11 shapes, Null, generators, deformers, materials), Light (7 kinds), Modes, Select,
+  Tools, View, Help. Closing, New and Open ask before discarding unsaved changes.
+- **Object Manager:** the hierarchy with expand / collapse, click and Shift / Ctrl selection, double-click to
+  rename, drag onto an object to parent it (or onto empty space to unparent), editor / renderer visibility dots,
+  the on / off check, and material tags. Drag a material from the Materials panel onto an object to assign it.
+- **Attribute Manager:** Basic (name, visibility, enabled, material), Coord. (position, scale, rotation) and
+  Object, which shows every setting of the shape, generator, deformer or light. Drag a field's letter to scrub
+  its value (Shift for fine steps), or type a number.
+- **Materials:** new, rename (double-click), recolour, assign to the selection, delete. **Asset Browser:** the
+  built-in objects and materials, with search. **Console:** the log, and a line that runs commands by name.
+  **Coordinates:** world position, bounding-box size and rotation of the active object.
+- Most shortcuts match the classic app: Ctrl+N / O / S / Shift+S, Ctrl+Z / Y, Ctrl+X / C / V, Del, Ctrl+D,
+  Alt+G, Ctrl+A, E / R / T / 9 for the tools, X / Y / Z axis locks, W world / object, C Make Editable.
+
+Not in the new interface yet (use Forma3D-classic.exe meanwhile): point, edge and polygon editing and the mesh
+tools, the Spline and Polygon Pens, snapping, quantizing, the workplane and Axis modes, layers, takes, the
+Structure Manager, workspaces and dockable panels, four-view layout, multiple open projects, preferences and
+shortcut customization, and the viewport Options effects menu.
+
+## What the engine and classic interface do
 
 - A Cinema 4D-style interface (Forma3D's own icons, no Cinema 4D branding):
   - Menu bar (File, Edit, Create, Modes, Select, Tools, Mesh, Window, Help) with icons and shortcuts.
