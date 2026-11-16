@@ -1,5 +1,5 @@
-//! Light objects (the Light menu): Area, Point, Spot, Omni, Infinite, Dome
-//! and Sun.
+//! Light objects (the Light menu): Area, Point, Spot, Omni, Infinite,
+//! Parallel, Dome and Sun, with their shadow settings and light linking.
 //!
 //! As in Cinema 4D a light shines along its object's +Z axis, and as soon as
 //! the scene has a visible light the viewport uses the scene's lights instead
@@ -19,12 +19,23 @@ pub enum LightKind {
     Infinite,
     Dome,
     Sun,
+    /// Parallel rays from a plane: like Infinite, but only in front of the
+    /// light (behind its plane nothing is lit).
+    Parallel,
 }
 
 impl LightKind {
     /// In Light menu order.
-    pub const ALL: [LightKind; 7] =
-        [LightKind::Area, LightKind::Point, LightKind::Spot, LightKind::Omni, LightKind::Infinite, LightKind::Dome, LightKind::Sun];
+    pub const ALL: [LightKind; 8] = [
+        LightKind::Area,
+        LightKind::Point,
+        LightKind::Spot,
+        LightKind::Omni,
+        LightKind::Infinite,
+        LightKind::Parallel,
+        LightKind::Dome,
+        LightKind::Sun,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -35,6 +46,7 @@ impl LightKind {
             LightKind::Infinite => "Infinite Light",
             LightKind::Dome => "Dome Light",
             LightKind::Sun => "Sun",
+            LightKind::Parallel => "Parallel Light",
         }
     }
 
@@ -47,6 +59,7 @@ impl LightKind {
             LightKind::Infinite => "infinite",
             LightKind::Dome => "dome",
             LightKind::Sun => "sun",
+            LightKind::Parallel => "parallel",
         }
     }
 
@@ -59,6 +72,7 @@ impl LightKind {
             LightKind::Infinite => "light directional parallel distant",
             LightKind::Dome => "light sky environment ambient hdri",
             LightKind::Sun => "light daylight sky physical",
+            LightKind::Parallel => "light directional parallel plane beam",
         }
     }
 
@@ -78,7 +92,7 @@ impl LightKind {
                 l.shadows = false;
             }
             LightKind::Sun => l.intensity = 110.0,
-            LightKind::Omni | LightKind::Infinite => {}
+            LightKind::Omni | LightKind::Infinite | LightKind::Parallel => {}
         }
         l
     }
@@ -101,7 +115,7 @@ impl LightKind {
     }
 
     fn directional(self) -> bool {
-        matches!(self, LightKind::Infinite | LightKind::Sun)
+        matches!(self, LightKind::Infinite | LightKind::Sun | LightKind::Parallel)
     }
 }
 
@@ -130,8 +144,44 @@ pub struct Light {
     pub outer_angle: f32,
     /// Area light rectangle (cm).
     pub size: [f32; 2],
-    /// Casts shadows when the viewport's Shadows option is on.
+    /// Casts shadows (in the viewport when its Shadows option is on).
     pub shadows: bool,
+    /// Shadow settings: how soft (0 = hard; the size of the light in cm),
+    /// how dark (percent) and what colour.
+    #[serde(default)]
+    pub shadow_softness: f32,
+    #[serde(default = "full")]
+    pub shadow_density: f32,
+    #[serde(default)]
+    pub shadow_color: [f32; 3],
+    /// Aims the light's +Z at this object (a Target light).
+    #[serde(default)]
+    pub look_at: Option<u64>,
+    /// Light linking: which objects (with their children) this light lights.
+    #[serde(default)]
+    pub link_mode: LinkMode,
+    #[serde(default)]
+    pub link_objects: Vec<u64>,
+}
+
+fn full() -> f32 {
+    100.0
+}
+
+/// Light linking: which objects a light reaches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LinkMode {
+    /// Every object.
+    #[default]
+    All,
+    /// Only the listed objects.
+    Include,
+    /// Everything except the listed objects.
+    Exclude,
+}
+
+impl LinkMode {
+    pub const ALL: [LinkMode; 3] = [LinkMode::All, LinkMode::Include, LinkMode::Exclude];
 }
 
 impl Default for Light {
@@ -146,6 +196,12 @@ impl Default for Light {
             outer_angle: 30.0,
             size: [200.0, 200.0],
             shadows: true,
+            shadow_softness: 0.0,
+            shadow_density: 100.0,
+            shadow_color: [0.0; 3],
+            look_at: None,
+            link_mode: LinkMode::All,
+            link_objects: Vec::new(),
         }
     }
 }
@@ -164,12 +220,51 @@ impl Light {
             outer_angle: outer,
             size: self.size.map(|s| f(s, 0.1, 1e6, 200.0)),
             shadows: self.shadows,
+            shadow_softness: f(self.shadow_softness, 0.0, 1e5, 0.0),
+            shadow_density: f(self.shadow_density, 0.0, 100.0, 100.0),
+            shadow_color: self.shadow_color.map(|c| f(c, 0.0, 1.0, 0.0)),
+            look_at: self.look_at,
+            link_mode: self.link_mode,
+            link_objects: self.link_objects.clone(),
+        }
+    }
+
+    /// Settings that mean nothing for this kind of light (the Attribute
+    /// Manager hides them).
+    pub fn hidden_fields(&self) -> &'static [&'static str] {
+        match self.kind {
+            LightKind::Spot => &["size"],
+            LightKind::Area => &["inner_angle", "outer_angle"],
+            LightKind::Point | LightKind::Omni => &["inner_angle", "outer_angle", "size"],
+            LightKind::Infinite | LightKind::Parallel | LightKind::Sun => &["inner_angle", "outer_angle", "size", "falloff", "radius"],
+            LightKind::Dome => &[
+                "inner_angle",
+                "outer_angle",
+                "size",
+                "falloff",
+                "radius",
+                "shadows",
+                "shadow_softness",
+                "shadow_density",
+                "shadow_color",
+                "look_at",
+            ],
+        }
+    }
+
+    /// Whether this light reaches `object`, given the objects its link list
+    /// covers (the listed objects and everything under them).
+    pub fn lights_object(&self, covered: &std::collections::HashSet<u64>, object: u64) -> bool {
+        match self.link_mode {
+            LinkMode::All => true,
+            LinkMode::Include => covered.contains(&object),
+            LinkMode::Exclude => !covered.contains(&object),
         }
     }
 
     /// Whether this light uses a direction (rather than a position).
     pub fn directional(&self) -> bool {
-        matches!(self.kind, LightKind::Infinite | LightKind::Sun)
+        self.kind.directional()
     }
 
     /// The Sun's colour follows its height: white at noon, orange towards the
@@ -248,6 +343,17 @@ impl Light {
             LightKind::Infinite => {
                 for off in [Vec3::new(-20.0, 0.0, 0.0), Vec3::ZERO, Vec3::new(20.0, 0.0, 0.0)] {
                     arrow(&mut lines, off - Vec3::Z * 40.0, 100.0);
+                }
+            }
+            LightKind::Parallel => {
+                // The plane the rays start from, and the rays.
+                let h = 40.0;
+                let c = [Vec3::new(-h, -h, 0.0), Vec3::new(h, -h, 0.0), Vec3::new(h, h, 0.0), Vec3::new(-h, h, 0.0)];
+                for k in 0..4 {
+                    lines.push((c[k], c[(k + 1) % 4]));
+                }
+                for off in [Vec3::new(-20.0, -20.0, 0.0), Vec3::new(20.0, -20.0, 0.0), Vec3::new(-20.0, 20.0, 0.0), Vec3::new(20.0, 20.0, 0.0)] {
+                    arrow(&mut lines, off, 90.0);
                 }
             }
             LightKind::Sun => {
@@ -348,7 +454,7 @@ impl SceneLights {
             let kind = match l.kind {
                 LightKind::Spot => 1.0,
                 LightKind::Area => 2.0,
-                LightKind::Infinite | LightKind::Sun => 3.0,
+                LightKind::Infinite | LightKind::Sun | LightKind::Parallel => 3.0,
                 _ => 0.0,
             };
             let raw = LightRaw {

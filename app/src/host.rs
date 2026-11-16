@@ -303,3 +303,81 @@ fn futures_channel() -> (Function, Promise) {
     let p = Promise::new(&mut |res, _rej| resolve = Some(res));
     (resolve.expect("promise executor runs at once"), p)
 }
+
+/// Calls `f` with the payload of every `event` the backend emits.
+pub fn listen(event: &str, f: impl Fn(JsValue) + 'static) {
+    let Some(t) = tauri() else { return };
+    let run = || -> Result<(), String> {
+        let ev = get(&t, "event")?;
+        let l: Function = get(&ev, "listen")?.dyn_into().map_err(|_| "no listen")?;
+        let cb = Closure::<dyn Fn(JsValue)>::new(move |e: JsValue| {
+            if let Ok(p) = Reflect::get(&e, &"payload".into()) {
+                f(p);
+            }
+        });
+        l.call2(&ev, &event.into(), cb.as_ref().unchecked_ref()).map_err(js_err)?;
+        cb.forget();
+        Ok(())
+    };
+    if let Err(e) = run() {
+        web_sys::console::warn_1(&format!("listen {event}: {e}").into());
+    }
+}
+
+/// Starts render `id` in the backend (its events carry the id).
+pub async fn render_start(id: u64, request: String, folder: Option<String>) -> Result<(), String> {
+    invoke("render_start", &serde_json::json!({ "id": id, "request": request, "folder": folder })).await.map(|_| ())
+}
+
+pub async fn render_cancel(id: u64) {
+    let _ = invoke("render_cancel", &serde_json::json!({ "id": id })).await;
+}
+
+/// Saves picture bytes (base64) through a Save dialog; the path, or None
+/// when cancelled.
+pub async fn save_image(name: &str, extension: &str, b64: String) -> Result<Option<String>, String> {
+    let v = invoke("save_image", &serde_json::json!({ "suggestedName": name, "extension": extension, "bytes": b64 })).await?;
+    Ok(v.as_string())
+}
+
+/// Browser fallback: downloads bytes as a file.
+pub fn download_bytes(name: &str, bytes: &[u8], mime: &str) -> Result<(), String> {
+    let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
+    let arr = js_sys::Uint8Array::from(bytes);
+    let parts = js_sys::Array::of1(&arr);
+    let opts = web_sys::BlobPropertyBag::new();
+    opts.set_type(mime);
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).map_err(js_err)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js_err)?;
+    let a: web_sys::HtmlAnchorElement = doc.create_element("a").map_err(js_err)?.dyn_into().map_err(|_| "no anchor")?;
+    a.set_href(&url);
+    a.set_download(name);
+    a.click();
+    let _ = web_sys::Url::revoke_object_url(&url);
+    Ok(())
+}
+
+/// Lets the browser breathe (draw, handle input) before going on.
+pub async fn yield_now() {
+    let (tx, p) = futures_channel();
+    if let Some(w) = web_sys::window() {
+        let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&tx, 0);
+    } else {
+        let _ = tx.call0(&JsValue::NULL);
+    }
+    let _ = JsFuture::from(p).await;
+}
+
+/// Milliseconds on a steady clock.
+pub fn now_ms() -> f64 {
+    web_sys::window().and_then(|w| w.performance()).map(|p| p.now()).unwrap_or(0.0)
+}
+
+/// Local date and time as YYYYMMDD and HHMMSS.
+pub fn local_date_time() -> (String, String) {
+    let d = js_sys::Date::new_0();
+    (
+        format!("{:04}{:02}{:02}", d.get_full_year(), d.get_month() + 1, d.get_date()),
+        format!("{:02}{:02}{:02}", d.get_hours(), d.get_minutes(), d.get_seconds()),
+    )
+}

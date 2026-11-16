@@ -61,6 +61,7 @@ pub fn path(name: &str) -> &'static str {
         "camera" => {
             r#"<rect x="3" y="7" width="13" height="10" rx="2"/><path d="m16 11 5-3v8l-5-3"/>"#
         }
+        "sky" => r#"<path d="M3 17a9 9 0 0 1 18 0"/><path d="M2 17h20"/><circle cx="15" cy="10" r="2"/>"#,
         "deformer" => r#"<path d="M6 3c6 4 6 14 0 18M18 3c-6 4-6 14 0 18"/>"#,
         "generator" => {
             r#"<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>"#
@@ -226,6 +227,8 @@ pub fn path(name: &str) -> &'static str {
         "uv" => {
             r#"<rect x="4" y="4" width="16" height="16"/><path d="M4 12h16M12 4v16" stroke-dasharray="2 2"/>"#
         }
+        "render" => r#"<path d="M4 5h16v12H4z"/><path d="m10 8 5 3-5 3z"/><path d="M8 21h8"/>"#,
+        "picture" => r#"<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 17-5-5-9 8"/>"#,
         "film" => {
             r#"<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4"/>"#
         }
@@ -276,6 +279,8 @@ pub fn for_kind(kind: &forma3d_core::scene::ObjectKind) -> &'static str {
         K::Polygon(_) => "polygon",
         K::Spline(_) => "spline",
         K::Light(_) => "light",
+        K::Camera(_) => "camera",
+        K::Sky(_) => "sky",
     }
 }
 

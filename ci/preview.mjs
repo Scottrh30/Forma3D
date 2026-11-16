@@ -163,8 +163,38 @@ await menu('Window');
 await shot('18-window-projects');
 await page.keyboard.press('Escape');
 
+// Rendering: a sky, Render View, Render Settings, the Picture Viewer,
+// the Light Lister and looking through a camera.
+await commander('physical sky');
+await commander('render view');
+await wait(5000);
+await shot('19-render-view');
+await commander('edit render settings');
+await shot('20-render-settings');
+await page.keyboard.press('Escape');
+await commander('render to picture viewer');
+await wait(8000);
+await shot('21-picture-viewer');
+await commander('stop rendering');
+await commander('light lister');
+await shot('22-light-lister');
+await menu('Create');
+const camSub = page.locator('.dropdown .sub', { hasText: 'Camera' }).first();
+if (await camSub.count()) { await camSub.hover(); }
+await shot('23-camera-menu');
+await page.keyboard.press('Escape');
+await page.mouse.click(10, 10);
+await commander('target camera');
+await commander('look through camera');
+await page.mouse.move(cx, cy);
+await page.mouse.down({ button: 'right' });
+await page.mouse.move(cx - 60, cy + 20, { steps: 8 });
+await page.mouse.up({ button: 'right' });
+await shot('24-look-through');
+await commander('editor camera');
+
 await tab('Console');
-await shot('19-console');
+await shot('25-console');
 
 fs.writeFileSync(`${out}/console.txt`, log.join('\n'));
 await browser.close();

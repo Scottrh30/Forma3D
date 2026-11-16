@@ -252,7 +252,7 @@ pub fn base_geo(scene: &Scene, id: ObjectId, build: &mut dyn FnMut(&Primitive) -
         ObjectKind::Deformer(_) => Geo::default(),
         ObjectKind::Polygon(m) => m.to_geo(),
         // Splines have no surface of their own (yet: no spline generators).
-        ObjectKind::Spline(_) | ObjectKind::Light(_) => Geo::default(),
+        ObjectKind::Spline(_) | ObjectKind::Light(_) | ObjectKind::Camera(_) | ObjectKind::Sky(_) => Geo::default(),
     }
 }
 

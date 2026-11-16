@@ -396,6 +396,155 @@ fn build_draws(
         .collect()
 }
 
+/// The Viewport engine: draws the final objects through `pose` into an
+/// offscreen texture, reads it back and calls `done` with the picture.
+fn hardware_render(
+    app: App,
+    gpu: StoredValue<Option<Gpu>, LocalStorage>,
+    w: u32,
+    h: u32,
+    pose: forma3d_core::scene_camera::CameraPose,
+    done: Box<dyn FnOnce(Result<forma3d_core::render::Image, String>)>,
+) {
+    use std::sync::Mutex;
+    let ready: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
+    let started = gpu.try_update_value(|g| -> Result<(wgpu::Buffer, u32, bool), String> {
+        let g = g.as_mut().ok_or("the viewport's graphics are not running")?;
+        let max = g.device.limits().max_texture_dimension_2d;
+        if w > max || h > max {
+            return Err(format!("the graphics card renders at most {max} × {max} pixels"));
+        }
+        let (frame, fx) = app.ed.try_update_value(|ed| {
+            let items: Vec<DrawItem> = ed
+                .final_objects()
+                .into_iter()
+                .map(|o| DrawItem { mesh: o.mesh, model: o.world, color: o.color, selection: o.selection, kind: o.kind })
+                .collect();
+            let fx = ed.view_opts.fx;
+            let mut frame = FrameScene::new(items, ed.display, fx);
+            frame.lights = ed.scene_lights();
+            (frame, fx)
+        }).ok_or("no project")?;
+        let aspect = w as f32 / h.max(1) as f32;
+        let mut cam = pose.to_editor(aspect, 500.0);
+        if let Some(pw) = pose.parallel_width {
+            cam.ortho_half_height = pw * 0.5 / aspect;
+        }
+        let mut uniform = CameraUniform::new(&cam, aspect, g.srgb, glam::Vec3::ZERO, 1e7);
+        uniform.set_lights(&frame.lights, frame.bounds);
+        uniform.set_effects(fx, frame.bounds, false);
+        uniform.set_shading(frame.mode);
+        let draw = ViewDraw {
+            slot: 4,
+            camera: uniform,
+            post: PostUniform::new(&cam, aspect, [w, h], fx),
+            size_px: [w, h],
+            grid: Vec::new(),
+            scene: Arc::new(frame),
+        };
+        let format = g.config.format;
+        let target = g.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("forma3d_hardware_render"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = make_depth(&g.device, w, h);
+        let padded = (w * 4).div_ceil(256) * 256;
+        let buffer = g.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("forma3d_readback"),
+            size: padded as u64 * h as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = g.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("forma3d_hardware") });
+        draw.prepare(&mut g.res, &g.device, &g.queue, &mut enc);
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("forma3d_hardware_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
+            pass.set_scissor_rect(0, 0, w, h);
+            draw.paint(&g.res, &mut pass);
+        }
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        g.queue.submit([enc.finish()]);
+        let flag = ready.clone();
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            if let Ok(mut f) = flag.lock() {
+                *f = Some(r.map_err(|e| e.to_string()));
+            }
+        });
+        let bgra = matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        Ok((buffer, padded, bgra))
+    });
+    let (buffer, padded, bgra) = match started.unwrap_or_else(|| Err("the viewport's graphics are not running".into())) {
+        Ok(x) => x,
+        Err(e) => return done(Err(e)),
+    };
+    leptos::task::spawn_local(async move {
+        let result = loop {
+            gpu.with_value(|g| {
+                if let Some(g) = g.as_ref() {
+                    let _ = g.device.poll(wgpu::PollType::Poll);
+                }
+            });
+            if let Some(r) = ready.lock().ok().and_then(|mut f| f.take()) {
+                break r;
+            }
+            crate::host::yield_now().await;
+        };
+        if let Err(e) = result {
+            return done(Err(format!("could not read the picture back: {e}")));
+        }
+        let mut img = forma3d_core::render::Image::new(w, h);
+        {
+            let data = match buffer.slice(..).get_mapped_range() {
+                Ok(d) => d,
+                Err(e) => return done(Err(format!("could not read the picture back: {e:?}"))),
+            };
+            for y in 0..h as usize {
+                let row = &data[y * padded as usize..y * padded as usize + w as usize * 4];
+                let out = &mut img.pixels[y * w as usize * 4..(y + 1) * w as usize * 4];
+                out.copy_from_slice(row);
+                if bgra {
+                    for px in out.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                    }
+                }
+            }
+        }
+        buffer.unmap();
+        done(Ok(img));
+    });
+}
+
 /// Entries of the right-click menu in the view.
 fn context_entries(component: bool) -> Vec<Entry> {
     use Entry::*;
@@ -520,8 +669,16 @@ pub fn Viewport() -> impl IntoView {
             .unwrap_or(false);
         let p = ptr.get_value();
         let Some((draws, rects, overlay, tri, objs)) = app.ed.try_update_value(|ed| {
-            let objects = visible_objects(ed);
             let rects = view_rects(ed, size);
+            // Render View renders at the active view's size; a looked-through
+            // camera and the Perspective view move together.
+            if let Some(r) = rects.iter().find(|r| r.kind == ed.active_view) {
+                crate::render::set_view_size((r.size.x * d).round() as u32, (r.size.y * d).round() as u32);
+            }
+            if let Some(r) = rects.iter().find(|r| r.kind == ViewKind::Perspective) {
+                ed.follow_look_through((r.size.x / r.size.y.max(1.0)).max(0.01));
+            }
+            let objects = visible_objects(ed);
             let draws = build_draws(ed, &objects, &rects, srgb, d);
             let overlay = run_tools(ed, &objects, &rects, &p, Flags::default());
             let tri: usize = objects
@@ -659,6 +816,10 @@ pub fn Viewport() -> impl IntoView {
             match init_gpu(cv).await {
                 Ok((g, name)) => {
                     gpu.set_value(Some(g));
+                    crate::render::set_hardware(std::rc::Rc::new(move |w, h, pose, done| {
+                        hardware_render(app, gpu, w, h, pose, done);
+                        schedule();
+                    }));
                     app.gpu_name.set(name.clone());
                     app.log_line(format!("Viewport: {name}"), false);
                     schedule();
@@ -958,6 +1119,10 @@ pub fn Viewport() -> impl IntoView {
                         crate::commands::run(app, if q { Cmd::Camera(k) } else { Cmd::FourViews });
                     }>{move || if quad() { icon("single") } else { icon("quad") }}</button>
                 </div>
+                <crate::render::RenderOverlay rect=Signal::derive(move || {
+                    let k = app.read(|e| e.active_view);
+                    rects_sig.get().into_iter().find(|r| r.kind == k).map(|r| (r.min.x, r.min.y, r.size.x, r.size.y))
+                }) />
                 <div class="stats">{move || stats.get()}<br />{move || app.gpu_name.get()}</div>
                 {move || error.get().map(|e| view! {
                     <div class="gpu-error">"The 3D view could not start: " {e} <br /> "Everything else still works."</div>

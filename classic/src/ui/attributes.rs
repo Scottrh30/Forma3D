@@ -202,6 +202,14 @@ fn object(ui: &mut Ui, ed: &mut Editor, id: u64) {
             heading(ui, "Null Object");
             hint(ui, "A Null has no parameters. Use it to group objects.");
         }
+        ObjectKind::Camera(c) => {
+            heading(ui, c.kind.name());
+            hint(ui, "Cameras are set up in the Forma3D app.");
+        }
+        ObjectKind::Sky(s) => {
+            heading(ui, s.kind.name());
+            hint(ui, "Skies are set up in the Forma3D app.");
+        }
         ObjectKind::Light(l) => {
             use crate::light::LightKind as K;
             heading(ui, l.kind.name());
@@ -251,6 +259,7 @@ fn object(ui: &mut Ui, ed: &mut Editor, id: u64) {
                     K::Sun => "Rotate the Sun to set the time of day: high is white noon light, low is warm evening light. It brings a soft blue sky with it.",
                     K::Dome => "Lights the whole scene evenly from the sky. Its colour tints every shadow side.",
                     K::Infinite => "Parallel light from one direction, like sunlight: only its rotation matters.",
+                    K::Parallel => "Parallel light from a plane: like Infinite, but only what's in front of it is lit.",
                     K::Area => "Shines from a rectangle towards its +Z axis, with softer shading than a point.",
                     K::Spot => "A cone of light along +Z: full inside the inner angle, fading to the outer one.",
                     K::Point => "Shines in every direction from one point and fades with distance.",

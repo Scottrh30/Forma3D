@@ -40,6 +40,8 @@ pub struct ViewOptions {
     pub primitives: bool,
     pub splines: bool,
     pub lights: bool,
+    /// Cameras and skies.
+    pub cameras: bool,
     /// Show only the selected objects.
     pub solo: bool,
     /// Render options: post effects, tessellation, shadows and so on.
@@ -48,7 +50,7 @@ pub struct ViewOptions {
 
 impl Default for ViewOptions {
     fn default() -> Self {
-        ViewOptions { grid: true, compass: true, nulls: true, deformers: true, generators: true, polygons: true, primitives: true, splines: true, lights: true, solo: false, fx: Default::default() }
+        ViewOptions { grid: true, compass: true, nulls: true, deformers: true, generators: true, polygons: true, primitives: true, splines: true, lights: true, cameras: true, solo: false, fx: Default::default() }
     }
 }
 
@@ -240,6 +242,26 @@ impl MeshCache {
         entry.0.clone()
     }
 
+    /// A camera's viewport outline, cached by its settings.
+    pub fn camera(&mut self, c: &crate::scene_camera::SceneCamera) -> Arc<Mesh> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        ("camera", format!("{c:?}")).hash(&mut h);
+        let entry = self.generated.entry(h.finish()).or_insert_with(|| (Arc::new(c.sanitized().gizmo()), true));
+        entry.1 = true;
+        entry.0.clone()
+    }
+
+    /// A sky's viewport dome, cached by its settings.
+    pub fn sky(&mut self, s: &crate::sky::Sky) -> Arc<Mesh> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        ("sky", format!("{s:?}")).hash(&mut h);
+        let entry = self.generated.entry(h.finish()).or_insert_with(|| (Arc::new(s.sanitized().gizmo()), true));
+        entry.1 = true;
+        entry.0.clone()
+    }
+
     /// A light's viewport outline, cached by its settings.
     pub fn light(&mut self, l: &crate::light::Light) -> Arc<Mesh> {
         use std::hash::{Hash, Hasher};
@@ -380,6 +402,10 @@ pub struct Editor {
     /// The geometry and children an Axis-mode drag keeps in place.
     pub axis_base: Option<AxisBase>,
     pub timeline: Timeline,
+    /// The camera object the Perspective view looks through (Cameras >
+    /// Look Through); navigating moves that camera.
+    pub look_through: Option<ObjectId>,
+    look_cache: Option<Camera>,
     pub dialog: Option<Dialog>,
     pub status: String,
     /// Label for the next recorded undo step.
@@ -430,6 +456,8 @@ impl Editor {
             snap_hit: None,
             axis_base: None,
             timeline: Timeline::default(),
+            look_through: None,
+            look_cache: None,
             dialog: None,
             status: String::new(),
             next_label: "Edit".to_owned(),
@@ -588,6 +616,7 @@ impl Editor {
             ObjectKind::Primitive(_) => f.primitives,
             ObjectKind::Spline(_) => f.splines,
             ObjectKind::Light(_) => f.lights,
+            ObjectKind::Camera(_) | ObjectKind::Sky(_) => f.cameras,
         };
         kind_ok && (!f.solo || self.selection.iter().any(|&s| s == id || self.scene.is_descendant(id, s)))
     }
@@ -737,7 +766,7 @@ impl Editor {
         let convertible = match obj.kind {
             ObjectKind::Primitive(_) | ObjectKind::Generator(_) => true,
             ObjectKind::Null => self.scene.has_deformer(id),
-            ObjectKind::Polygon(_) | ObjectKind::Deformer(_) | ObjectKind::Spline(_) | ObjectKind::Light(_) => false,
+            ObjectKind::Polygon(_) | ObjectKind::Deformer(_) | ObjectKind::Spline(_) | ObjectKind::Light(_) | ObjectKind::Camera(_) | ObjectKind::Sky(_) => false,
         };
         if !convertible {
             self.status = "Only primitives, generators and deformed Nulls can be made editable".to_owned();
@@ -979,17 +1008,139 @@ impl Editor {
         id
     }
 
-    /// The visible lights, ready for the viewport.
+    /// The visible lights, ready for the viewport (skies count as lights).
     pub fn scene_lights(&self) -> crate::light::SceneLights {
         let mut found = Vec::new();
-        self.scene.walk(|o, world| {
-            if let ObjectKind::Light(l) = &o.kind
-                && self.scene.editor_visible(o.id)
-            {
-                found.push((l.clone(), world));
+        self.scene.walk(|o, _| {
+            if !self.scene.editor_visible(o.id) {
+                return;
+            }
+            match &o.kind {
+                ObjectKind::Light(l) => found.push((l.clone(), self.scene.effective_world(o.id))),
+                ObjectKind::Sky(s) => found.extend(sky_lights(s)),
+                _ => {}
             }
         });
         crate::light::SceneLights::gather(found.iter().map(|(l, w)| (l, *w)))
+    }
+
+    /// Keeps the Perspective view and the looked-through camera together:
+    /// when the view was navigated since the last call, the camera object
+    /// moves to it; then the view takes the camera's pose. `aspect` is the
+    /// view's width / height. Returns whether the view changed.
+    pub fn follow_look_through(&mut self, aspect: f32) -> bool {
+        use crate::scene_camera::CameraKind;
+        let slot = ViewKind::Perspective.index();
+        let Some(id) = self.look_through.filter(|id| matches!(self.scene.get(*id).map(|o| &o.kind), Some(ObjectKind::Camera(_)))) else {
+            self.look_through = None;
+            self.look_cache = None;
+            return false;
+        };
+        let view = self.cameras[slot];
+        if self.look_cache.is_some_and(|c| c != view) {
+            let kind = match self.scene.get(id).map(|o| &o.kind) {
+                Some(ObjectKind::Camera(c)) => c.kind,
+                _ => CameraKind::Standard,
+            };
+            // Rigs place the camera themselves: only plain cameras follow
+            // fully; a Target camera moves but keeps aiming at its target.
+            match kind {
+                CameraKind::Standard | CameraKind::Stereo | CameraKind::Motion => {
+                    self.scene.set_world_position(id, view.eye());
+                    self.scene.set_world_rotation_hpb(id, crate::light::aim_hpb(view.forward()));
+                }
+                CameraKind::Target => self.scene.set_world_position(id, view.eye()),
+                CameraKind::Morph | CameraKind::Crane => {}
+            }
+        }
+        let Some(pose) = crate::scene_camera::pose(&self.scene, id, self.time()) else { return false };
+        let mut cam = pose.to_editor(aspect, view.distance);
+        cam.kind = ViewKind::Perspective;
+        let changed = cam != view;
+        self.cameras[slot] = cam;
+        self.look_cache = Some(cam);
+        changed
+    }
+
+    /// The scene time in seconds (the timeline's frame).
+    pub fn time(&self) -> f32 {
+        self.timeline.frame as f32 / self.timeline.fps.max(1.0)
+    }
+
+    /// Adds a camera where the active view looks from, seeing what it sees.
+    /// A Target camera gets a Null to aim at; a Camera Morph blends the two
+    /// selected cameras.
+    pub fn create_camera(&mut self, kind: crate::scene_camera::CameraKind) -> ObjectId {
+        use crate::scene_camera::{CameraKind, SceneCamera};
+        let picked: Vec<ObjectId> = self.selection.iter().copied().filter(|&s| matches!(self.scene.get(s).map(|o| &o.kind), Some(ObjectKind::Camera(_)))).collect();
+        let mut cam = SceneCamera::new(kind);
+        let view = self.cameras[ViewKind::Perspective.index()];
+        if kind == CameraKind::Morph {
+            cam.morph_from = picked.first().copied();
+            cam.morph_to = picked.get(1).copied();
+        }
+        cam.focus_distance = view.distance;
+        let id = self.scene.add_object(kind.name(), ObjectKind::Camera(cam), None);
+        let eye = view.eye();
+        let hpb = crate::light::aim_hpb(view.forward());
+        if let Some(o) = self.scene.get_mut(id) {
+            if kind == CameraKind::Crane {
+                // The base on the floor, the boom reaching out to where the view is.
+                let flat = Vec3::new(view.forward().x, 0.0, view.forward().z).normalize_or(Vec3::Z);
+                o.pos = Vec3::new(eye.x, 0.0, eye.z) - flat * 400.0 * 15f32.to_radians().cos();
+                o.rot = Vec3::new(hpb.x, 0.0, 0.0);
+            } else {
+                o.pos = eye;
+                o.rot = hpb;
+            }
+        }
+        if kind == CameraKind::Target {
+            let t = self.scene.add_null(None);
+            if let Some(o) = self.scene.get_mut(t) {
+                o.name = "Camera Target".to_owned();
+                o.pos = view.target;
+            }
+            if let Some(ObjectKind::Camera(c)) = self.scene.get_mut(id).map(|o| &mut o.kind) {
+                c.look_at = Some(t);
+            }
+        }
+        self.select_only(id);
+        self.label(format!("Create {}", kind.name()));
+        self.status = match kind {
+            CameraKind::Morph if picked.len() < 2 => "Camera Morph: set Morph From and Morph To to two cameras".to_owned(),
+            _ => format!("Created {}: Cameras > Look Through shows its view", kind.name()),
+        };
+        id
+    }
+
+    /// Adds a Sky or Physical Sky.
+    pub fn create_sky(&mut self, kind: crate::sky::SkyKind) -> ObjectId {
+        let id = self.scene.add_object(kind.name(), ObjectKind::Sky(crate::sky::Sky::new(kind)), None);
+        self.select_only(id);
+        self.label(format!("Create {}", kind.name()));
+        self.status = format!("Created {}: it lights the scene and shows behind it in renders", kind.name());
+        id
+    }
+
+    /// Adds a Spot light aimed at a new Null (a Target light).
+    pub fn create_target_light(&mut self) -> ObjectId {
+        let id = self.create_light(crate::light::LightKind::Spot);
+        let target = self.cameras[self.active_view.index()].target;
+        let t = self.scene.add_null(None);
+        if let Some(o) = self.scene.get_mut(t) {
+            o.name = "Light Target".to_owned();
+            o.pos = target;
+        }
+        if let Some(o) = self.scene.get_mut(id) {
+            o.name = "Target Light".to_owned();
+            if let ObjectKind::Light(l) = &mut o.kind {
+                l.look_at = Some(t);
+            }
+        }
+        self.select_only(id);
+        self.label("Create Target Light");
+        self.status = "Created Target Light: move \"Light Target\" to aim it".to_owned();
+        id
     }
 
     pub fn create_null(&mut self) -> ObjectId {
@@ -1370,14 +1521,38 @@ impl Editor {
 
     /// Every visible object with its mesh, world matrix and display colour.
     pub fn render_objects(&mut self) -> Vec<RenderObject> {
+        self.collect_objects(false)
+    }
+
+    /// The surfaces a final render shows: objects visible in renders (the
+    /// render dot and the layer's Render switch), without helpers such as
+    /// lights, cameras, nulls and splines.
+    pub fn final_objects(&mut self) -> Vec<RenderObject> {
+        let mut v = self.collect_objects(true);
+        v.retain(|o| o.kind == ItemKind::Surface && !o.mesh.indices.is_empty());
+        for o in &mut v {
+            o.selection = SelectionState::None;
+        }
+        v
+    }
+
+    fn collect_objects(&mut self, final_render: bool) -> Vec<RenderObject> {
         let active = self.active();
+        let time = self.time();
         let mut out = Vec::new();
         let (scene, meshes, selection) = (&self.scene, &mut self.meshes, &self.selection);
         scene.walk(|o, world| {
+            // Cameras sit where their rig puts them; aimed lights face their target.
+            let world = match &o.kind {
+                ObjectKind::Camera(_) => crate::scene_camera::pose(scene, o.id, time).map_or(world, |p| p.matrix()),
+                ObjectKind::Light(l) if l.look_at.is_some() => scene.effective_world(o.id),
+                _ => world,
+            };
             // Objects inside a generator (or a deformed Null) only exist through its output;
             // deformers stay visible as their cage.
             let is_deformer = matches!(o.kind, ObjectKind::Deformer(_));
-            if !scene.editor_visible(o.id) || (!is_deformer && scene.consumer_ancestor(o.id).is_some()) {
+            let visible = if final_render { scene.render_visible(o.id) } else { scene.editor_visible(o.id) };
+            if !visible || (!is_deformer && scene.consumer_ancestor(o.id).is_some()) {
                 return;
             }
             let deformed = scene.has_deformer(o.id);
@@ -1401,6 +1576,8 @@ impl Editor {
                 ObjectKind::Deformer(d) => (meshes.cage(d), ItemKind::LinesOnly),
                 ObjectKind::Spline(s) => (meshes.spline(s), ItemKind::LinesOnly),
                 ObjectKind::Light(l) => (meshes.light(l), ItemKind::LinesOnly),
+                ObjectKind::Camera(c) => (meshes.camera(c), ItemKind::LinesOnly),
+                ObjectKind::Sky(s) => (meshes.sky(s), ItemKind::LinesOnly),
                 ObjectKind::Polygon(_) => match meshes.generated(scene, o.id) {
                     Some(m) => (m, ItemKind::Surface),
                     None => (meshes.null(), ItemKind::LinesOnly),
@@ -1421,6 +1598,8 @@ impl Editor {
             let light_color = match &o.kind {
                 // Lights are drawn in their own colour, lifted so dark ones stay visible.
                 ObjectKind::Light(l) => Some(Vec3::from(l.color).lerp(Vec3::new(1.0, 0.85, 0.35), 0.35).max(Vec3::splat(0.35)).to_array()),
+                ObjectKind::Camera(_) => Some([0.62, 0.78, 1.0]),
+                ObjectKind::Sky(s) => Some(s.radiance(Vec3::new(0.0, 0.6, 0.8)).max(Vec3::splat(0.4)).to_array()),
                 _ => None,
             };
             let color = light_color.or_else(|| material.and_then(|m| scene.material(m)).map(|m| m.color)).unwrap_or(match kind {
@@ -1443,7 +1622,7 @@ impl Editor {
                 color,
                 selection,
                 kind,
-                curve: matches!(o.kind, ObjectKind::Spline(_) | ObjectKind::Light(_)),
+                curve: matches!(o.kind, ObjectKind::Spline(_) | ObjectKind::Light(_) | ObjectKind::Camera(_) | ObjectKind::Sky(_)),
             });
         });
         out
@@ -1763,6 +1942,25 @@ mod tests {
         let sel = objs.iter().find(|o| o.id == ids[1]).unwrap();
         assert_eq!(sel.selection, SelectionState::Active);
         assert!(objs.iter().filter(|o| o.selection != SelectionState::None).count() == 1);
+    }
+
+    #[test]
+    fn look_through_follows_and_moves_the_camera() {
+        let mut ed = Editor::new(Scene::new());
+        let cam = ed.create_camera(crate::scene_camera::CameraKind::Standard);
+        ed.scene.get_mut(cam).unwrap().pos = Vec3::new(0.0, 0.0, -500.0);
+        ed.scene.get_mut(cam).unwrap().rot = Vec3::ZERO;
+        ed.look_through = Some(cam);
+        ed.follow_look_through(1.5);
+        assert!((ed.cameras[0].eye() - Vec3::new(0.0, 0.0, -500.0)).length() < 0.5);
+        assert!(!ed.follow_look_through(1.5), "steady when nothing changes");
+        // Navigating the view moves the camera object.
+        ed.cameras[0].target += Vec3::new(100.0, 0.0, 0.0);
+        ed.follow_look_through(1.5);
+        assert!((ed.scene.world_position(cam).x - 100.0).abs() < 0.5);
+        ed.scene.remove(&[cam]);
+        assert!(!ed.follow_look_through(1.5));
+        assert_eq!(ed.look_through, None);
     }
 
     #[test]
@@ -2184,4 +2382,23 @@ mod tests {
         assert!(near(hsv_to_rgb(1.0 / 3.0, 1.0, 1.0), [0.0, 1.0, 0.0]));
         assert!(near(hsv_to_rgb(2.0 / 3.0, 1.0, 1.0), [0.0, 0.0, 1.0]));
     }
+}
+
+/// A sky as the lights the viewport understands: ambient light (a Dome) and,
+/// for a physical sky, its sun.
+pub fn sky_lights(s: &crate::sky::Sky) -> Vec<(crate::light::Light, Mat4)> {
+    use crate::light::{Light, LightKind};
+    let s = s.sanitized();
+    let amb = s.ambient();
+    let peak = amb.max_element().max(1e-4);
+    let mut out = vec![(
+        Light { kind: LightKind::Dome, color: (amb / peak).to_array(), intensity: s.intensity * peak * 0.8, ..LightKind::Dome.default_light() },
+        Mat4::IDENTITY,
+    )];
+    if s.kind == crate::sky::SkyKind::Physical && s.sun && s.sun_direction().y > -0.05 {
+        let dir = -s.sun_direction();
+        let rot = crate::scene::hpb_to_quat(crate::light::aim_hpb(dir));
+        out.push((Light { kind: LightKind::Sun, intensity: s.sun_intensity * 1.1, ..LightKind::Sun.default_light() }, Mat4::from_quat(rot)));
+    }
+    out
 }

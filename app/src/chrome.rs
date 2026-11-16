@@ -16,6 +16,8 @@ use forma3d_core::gizmo::{CoordSystem, Tool};
 use forma3d_core::light::LightKind;
 use forma3d_core::pen::PenKind;
 use forma3d_core::primitive::PrimitiveKind;
+use forma3d_core::scene_camera::CameraKind;
+use forma3d_core::sky::SkyKind;
 use forma3d_core::renderer::{DisplayMode, ViewFx};
 use forma3d_core::snap::{SnapKind, SnapMode};
 use leptos::prelude::*;
@@ -112,11 +114,30 @@ pub fn menu(name: &str) -> Vec<Entry> {
                 cmds(GeneratorKind::ALL.map(Cmd::Generator)),
             ));
             v.push(Sub("Deformers", cmds(DeformerKind::ALL.map(Cmd::Deformer))));
+            v.push(Sub("Camera", cmds(CameraKind::ALL.map(Cmd::SceneCamera))));
             v.push(Sep);
             v.push(C(Cmd::NewMaterial));
             v
         }
-        "Light" => cmds(LightKind::ALL.map(Cmd::Light)),
+        "Light" => {
+            let mut v = cmds(LightKind::ALL.map(Cmd::Light));
+            v.extend([Sep, C(Cmd::TargetLight), Sep]);
+            v.extend(cmds(SkyKind::ALL.map(Cmd::Sky)));
+            v.extend([Sep, C(Cmd::ShowPanel(Panel::LightLister))]);
+            v
+        }
+        "Render" => vec![
+            C(Cmd::RenderView),
+            C(Cmd::RenderRegion),
+            C(Cmd::RenderToViewer),
+            C(Cmd::StopRender),
+            Sep,
+            C(Cmd::AddToQueue),
+            C(Cmd::ShowPanel(Panel::RenderQueue)),
+            C(Cmd::ShowPanel(Panel::PictureViewer)),
+            Sep,
+            C(Cmd::RenderSettings),
+        ],
         "Modes" => {
             let mut v = cmds(EditMode::ALL.map(Cmd::Mode));
             v.extend([
@@ -178,7 +199,11 @@ pub fn menu(name: &str) -> Vec<Entry> {
             ]);
             v
         }
-        "v-Cameras" => cmds(ViewKind::ALL.map(Cmd::Camera)),
+        "v-Cameras" => {
+            let mut v = vec![C(Cmd::LookThrough), C(Cmd::EditorCamera), Sep, C(Cmd::UseRenderCamera), C(Cmd::FocusOnSelection), Sep];
+            v.extend(cmds(ViewKind::ALL.map(Cmd::Camera)));
+            v
+        }
         "v-Display" => vec![
             C(Cmd::ToggleGrid),
             C(Cmd::ToggleCompass),
@@ -420,7 +445,7 @@ pub fn TitleBar() -> impl IntoView {
                 <svg viewBox="0 0 24 24"><path d="M12 3 20 7.5v9L12 21 4 16.5v-9z" /><path d="M4 7.5 12 12l8-4.5M12 12v9" /></svg>
             </div>
             <div class="menus">
-                {["File", "Edit", "Create", "Light", "Modes", "Select", "Tools", "Mesh", "View", "Window", "Help"]
+                {["File", "Edit", "Create", "Light", "Modes", "Select", "Tools", "Mesh", "View", "Render", "Window", "Help"]
                     .into_iter()
                     .map(|n| view! { <MenuButton name=n /> })
                     .collect_view()}

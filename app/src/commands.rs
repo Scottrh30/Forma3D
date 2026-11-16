@@ -18,6 +18,8 @@ use forma3d_core::pen::PenKind;
 use forma3d_core::primitive::PrimitiveKind;
 use forma3d_core::renderer::{DisplayMode, ViewFx};
 use forma3d_core::scene::ObjectKind;
+use forma3d_core::scene_camera::CameraKind;
+use forma3d_core::sky::SkyKind;
 use forma3d_core::snap::{SnapKind, SnapMode};
 use leptos::prelude::*;
 use std::sync::OnceLock;
@@ -107,6 +109,9 @@ pub enum Cmd {
     Deformer(DeformerKind),
     NewMaterial,
     Light(LightKind),
+    TargetLight,
+    Sky(SkyKind),
+    SceneCamera(CameraKind),
     Pen(PenKind),
     // Modes
     Mode(EditMode),
@@ -163,6 +168,18 @@ pub enum Cmd {
     ToggleCompass,
     ToggleSolo,
     ViewFx(ViewFx),
+    // Cameras
+    LookThrough,
+    EditorCamera,
+    UseRenderCamera,
+    FocusOnSelection,
+    // Render
+    RenderView,
+    RenderToViewer,
+    RenderRegion,
+    StopRender,
+    RenderSettings,
+    AddToQueue,
     // Animation
     PlayPause,
     PlayBackward,
@@ -414,6 +431,23 @@ pub fn all() -> Vec<Info> {
             k.keywords(),
         );
     }
+    add(Cmd::TargetLight, "light.target", "Target Light", "Light", "light", "spot aim look at target null");
+    for k in SkyKind::ALL {
+        add(Cmd::Sky(k), &format!("light.{}", k.id()), k.name(), "Light", "sky", k.keywords());
+    }
+    for k in CameraKind::ALL {
+        add(Cmd::SceneCamera(k), &format!("create.camera.{}", k.id()), k.name(), "Create", "camera", k.keywords());
+    }
+    add(Cmd::LookThrough, "cameras.look_through", "Look Through Camera", "Cameras", "camera", "use camera view active object set");
+    add(Cmd::EditorCamera, "cameras.editor", "Editor Camera", "Cameras", "camera", "stop looking through default view");
+    add(Cmd::UseRenderCamera, "cameras.render_camera", "Use as Render Camera", "Cameras", "camera", "render camera active final");
+    add(Cmd::FocusOnSelection, "cameras.focus", "Focus on Selection", "Cameras", "camera", "depth of field focus distance dof pick");
+    add(Cmd::RenderView, "render.view", "Render View", "Render", "render", "render active view preview");
+    add(Cmd::RenderToViewer, "render.picture_viewer", "Render to Picture Viewer", "Render", "render", "render final picture image save frames");
+    add(Cmd::RenderRegion, "render.region", "Interactive Render Region", "Render", "render", "ipr interactive region live preview");
+    add(Cmd::StopRender, "render.stop", "Stop Rendering", "Render", "close", "cancel abort render");
+    add(Cmd::RenderSettings, "render.settings", "Edit Render Settings...", "Render", "settings", "render settings output resolution samples passes color management");
+    add(Cmd::AddToQueue, "render.queue_add", "Add to Render Queue", "Render", "render", "batch render queue");
     add(
         Cmd::Pen(PenKind::Spline),
         "create.spline_pen",
@@ -1118,6 +1152,10 @@ pub fn default_shortcuts() -> Vec<(Cmd, Binding)> {
         (Cmd::ToggleSnap, one(S::shift("S"))),
         (Cmd::CustomizeCommands, one(S::shift("F12"))),
         (Cmd::PlayPause, one(S::key("F8"))),
+        (Cmd::RenderView, one(S::ctrl("R"))),
+        (Cmd::RenderToViewer, one(S::shift("R"))),
+        (Cmd::RenderSettings, one(S::ctrl("B"))),
+        (Cmd::RenderRegion, one(S::alt("R"))),
     ];
     for (k, key) in ViewKind::ALL.into_iter().zip(["F1", "F2", "F3", "F4"]) {
         v.push((Cmd::Camera(k), one(S::key(key))));
@@ -1269,6 +1307,11 @@ pub fn state_of(
         Cmd::PlayPause => (true, Some(ed.timeline.playing && !ed.timeline.reverse)),
         Cmd::PlayBackward => (true, Some(ed.timeline.playing && ed.timeline.reverse)),
         Cmd::Workspace(w) => (true, Some(workspace == w)),
+        Cmd::EditorCamera => (true, Some(ed.look_through.is_none())),
+        Cmd::LookThrough => (true, Some(ed.look_through.is_some())),
+        Cmd::UseRenderCamera => (ed.active().is_some_and(|id| matches!(ed.scene.get(id).map(|o| &o.kind), Some(ObjectKind::Camera(_)))), None),
+        Cmd::StopRender => (crate::render::busy(), None),
+        Cmd::RenderRegion => (true, Some(crate::render::region_on())),
         _ => (true, None),
     }
 }
@@ -1305,6 +1348,11 @@ pub enum AppAction {
     Commander,
     CustomizeCommands,
     About,
+    Render(crate::render::Target),
+    RenderRegion,
+    StopRender,
+    RenderSettings,
+    AddToQueue,
 }
 
 /// Runs a command on the editor alone. Returns what the app must do for
@@ -1519,6 +1567,65 @@ pub fn execute(ed: &mut Editor, cmd: Cmd) -> Option<AppAction> {
         Cmd::Light(k) => {
             ed.create_light(k);
         }
+        Cmd::TargetLight => {
+            ed.create_target_light();
+        }
+        Cmd::Sky(k) => {
+            ed.create_sky(k);
+        }
+        Cmd::SceneCamera(k) => {
+            ed.create_camera(k);
+        }
+        Cmd::LookThrough => {
+            let cam = ed.active().filter(|id| matches!(ed.scene.get(*id).map(|o| &o.kind), Some(ObjectKind::Camera(_)))).or(ed.scene.render_camera);
+            match cam {
+                Some(id) => {
+                    ed.look_through = Some(id);
+                    ed.layout = ViewLayout::Single;
+                    ed.single_view = ViewKind::Perspective;
+                    ed.active_view = ViewKind::Perspective;
+                    let name = ed.scene.get(id).map(|o| o.name.clone()).unwrap_or_default();
+                    ed.status = format!("Looking through {name}: navigating moves the camera");
+                }
+                None => ed.status = "Look Through: select a camera first".to_owned(),
+            }
+        }
+        Cmd::EditorCamera => {
+            ed.look_through = None;
+            ed.status = "Editor camera".to_owned();
+        }
+        Cmd::UseRenderCamera => {
+            let cam = ed.active().filter(|id| matches!(ed.scene.get(*id).map(|o| &o.kind), Some(ObjectKind::Camera(_))));
+            ed.scene.render_camera = cam;
+            ed.status = match cam.and_then(|c| ed.scene.get(c)) {
+                Some(o) => format!("Renders now look through {}", o.name),
+                None => "Renders now look through the active view".to_owned(),
+            };
+            ed.label("Set Render Camera");
+        }
+        Cmd::FocusOnSelection => {
+            let cam = ed.look_through.or(ed.scene.render_camera);
+            let target = ed.selection.iter().copied().find(|s| Some(*s) != cam);
+            match (cam, target) {
+                (Some(c), Some(t)) => {
+                    let eye = forma3d_core::scene_camera::pose(&ed.scene, c, ed.time()).map(|p| (p.eye, p.forward));
+                    let at = ed.scene.world_position(t);
+                    if let (Some((eye, fwd)), Some(ObjectKind::Camera(sc))) = (eye, ed.scene.get_mut(c).map(|o| &mut o.kind)) {
+                        sc.focus_distance = (at - eye).dot(fwd).max(1.0);
+                        sc.depth_of_field = true;
+                    }
+                    ed.label("Focus on Selection");
+                    ed.status = "Focus distance set to the selection".to_owned();
+                }
+                _ => ed.status = "Focus on Selection: look through or render with a camera, and select what should be sharp".to_owned(),
+            }
+        }
+        Cmd::RenderView => return Some(AppAction::Render(crate::render::Target::View)),
+        Cmd::RenderToViewer => return Some(AppAction::Render(crate::render::Target::Viewer)),
+        Cmd::RenderRegion => return Some(AppAction::RenderRegion),
+        Cmd::StopRender => return Some(AppAction::StopRender),
+        Cmd::RenderSettings => return Some(AppAction::RenderSettings),
+        Cmd::AddToQueue => return Some(AppAction::AddToQueue),
         Cmd::Pen(k) => {
             if ed.pen.as_ref().is_some_and(|p| p.kind == k) {
                 ed.stop_pen();
@@ -1728,6 +1835,11 @@ fn exec(app: App, c: Cmd, confirmed: bool) {
         AppAction::Commander => app.commander.set(true),
         AppAction::CustomizeCommands => app.customize_open.set(true),
         AppAction::About => app.about.set(true),
+        AppAction::Render(t) => crate::render::start(app, t),
+        AppAction::RenderRegion => crate::render::toggle_region(app),
+        AppAction::StopRender => crate::render::stop(app),
+        AppAction::RenderSettings => crate::render::open_settings(app),
+        AppAction::AddToQueue => crate::render::add_to_queue(app),
     }
 }
 

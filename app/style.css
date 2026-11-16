@@ -330,3 +330,49 @@ select.sel { height: 26px; border-radius: 6px; background: var(--bg3); border: 1
 .krow .cat { width: 80px; color: var(--faint); font-size: 11px; }
 .kbtn { min-width: 150px; font: 11.5px "DejaVu Sans Mono", Consolas, monospace; }
 .btn.small { height: 22px; padding: 0 8px; font-size: 11px; }
+.linked { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); max-width: 60%; }
+.row-btns { display: flex; gap: 6px; margin: 2px 0 6px; justify-content: flex-end; }
+
+/* ---- rendering ---- */
+.rview { position: absolute; pointer-events: none; z-index: 2; }
+.rregion { position: absolute; pointer-events: none; z-index: 3; border: 1px dashed rgba(255,170,51,.85); }
+.rprog { position: absolute; height: 4px; border-radius: 2px; background: rgba(0,0,0,.45); z-index: 3; pointer-events: none; overflow: hidden; }
+.rprog div { height: 100%; background: var(--accent); }
+.tb.small { width: 24px; height: 22px; font-weight: 600; }
+.checker { background-color: #2a2c31; background-image: linear-gradient(45deg, #34363c 25%, transparent 25%, transparent 75%, #34363c 75%), linear-gradient(45deg, #34363c 25%, transparent 25%, transparent 75%, #34363c 75%); background-size: 16px 16px; background-position: 0 0, 8px 8px; }
+.pv, .rq, .lister { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.pv-bar { align-items: center; gap: 6px; flex-wrap: wrap; }
+.pv-bar .sel { max-width: 150px; }
+.pv-info { margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pv-body { flex: 1; display: flex; min-height: 0; }
+.pv-view { flex: 1; min-width: 0; overflow: auto; position: relative; background-color: #2a2c31; background-image: linear-gradient(45deg, #34363c 25%, transparent 25%, transparent 75%, #34363c 75%), linear-gradient(45deg, #34363c 25%, transparent 25%, transparent 75%, #34363c 75%); background-size: 16px 16px; background-position: 0 0, 8px 8px; }
+.pv-pic { min-width: 100%; min-height: 100%; display: grid; place-items: center; padding: 8px; }
+.pv-pic.fit { position: absolute; inset: 0; }
+.pv-stack { position: relative; display: inline-block; max-width: 100%; max-height: 100%; }
+.pv-pic.fit .pv-stack { height: 100%; display: grid; place-items: center; }
+.pv-img { display: block; max-width: 100%; max-height: 100%; image-rendering: auto; }
+.pv-pic:not(.fit) .pv-img { image-rendering: pixelated; }
+.pv-b { position: absolute; inset: 0; margin: auto; }
+.pv-split { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--sel); pointer-events: none; }
+.pv-empty { margin: auto; padding: 24px; }
+.pv-list { width: 200px; flex: none; border-left: 1px solid var(--line); overflow: auto; background: var(--bg1); }
+.pv-item { display: flex; gap: 6px; align-items: center; padding: 6px; border-bottom: 1px solid var(--line); }
+.pv-item:hover { background: var(--bg2); }
+.pv-item.sel { background: var(--accentbg); }
+.pv-item img { width: 48px; height: 32px; object-fit: contain; background: #2a2c31; border-radius: 3px; flex: none; }
+.pv-meta, .rq-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.pv-meta span, .rq-meta span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rq .bar { gap: 6px; }
+.rq > .hint, .lister > .hint { padding: 12px; }
+.rq-row { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.rq-status { color: var(--dim); white-space: nowrap; }
+.lister { overflow: auto; }
+.ll { width: 100%; border-collapse: collapse; }
+.ll th { text-align: left; font-weight: 500; color: var(--dim); padding: 6px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg2); }
+.ll td { padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.ll tr.sel td { background: var(--accentbg); }
+.ll .ll-name { cursor: pointer; }
+.ll .num { max-width: 110px; }
+.dialog.rsettings { width: 560px; max-height: calc(100vh - 100px); margin-top: 50px; }
+.rs-body { overflow: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px; }
+.passes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 10px; }

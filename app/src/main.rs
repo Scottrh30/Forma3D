@@ -17,6 +17,7 @@ mod managers;
 mod objects;
 mod pen;
 mod prefs;
+mod render;
 mod settings;
 mod state;
 mod timeline;
@@ -55,13 +56,15 @@ fn handle_key(app: App, ev: &web_sys::KeyboardEvent) -> bool {
         || app.ask.with_untracked(|a| a.is_some())
         || app.about.get_untracked()
         || app.prefs_open.get_untracked()
-        || app.customize_open.get_untracked();
+        || app.customize_open.get_untracked()
+        || app.render.with_untracked(|r| r.settings_open);
     if key.name() == "Esc" && (modal || app.menu.get_untracked().is_some()) {
         app.menu.set(None);
         app.commander.set(false);
         app.about.set(false);
         app.prefs_open.set(false);
         app.customize_open.set(false);
+        app.render.update(|r| r.settings_open = false);
         app.ask.set(None);
         return true;
     }
@@ -111,6 +114,7 @@ fn Root() -> impl IntoView {
     app.log_line("Forma3D started", false);
     settings::load_all(app);
     settings::start_autosave(app);
+    render::init(app);
 
     // The window's close button, Alt+F4 and the taskbar ask first when there
     // are unsaved changes.
@@ -173,6 +177,7 @@ fn Root() -> impl IntoView {
             <StatusBar />
             <Commander />
             <Dialogs />
+            <render::RenderSettingsDialog />
         </div>
     }
 }

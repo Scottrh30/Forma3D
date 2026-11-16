@@ -44,7 +44,7 @@ impl ViewKind {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     pub kind: ViewKind,
     pub target: Vec3,

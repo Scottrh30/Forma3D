@@ -19,6 +19,8 @@ fn kind_label(k: &ObjectKind) -> String {
         ObjectKind::Polygon(_) => "Polygon Object".into(),
         ObjectKind::Spline(_) => "Spline".into(),
         ObjectKind::Light(l) => format!("{} Light", l.kind.name()),
+        ObjectKind::Camera(c) => c.kind.name().into(),
+        ObjectKind::Sky(s) => s.kind.name().into(),
     }
 }
 
@@ -36,8 +38,16 @@ fn pretty(name: &str) -> String {
 
 fn unit_for(name: &str) -> &'static str {
     let n = name.to_lowercase();
+    match n.as_str() {
+        "focal_length" | "sensor_width" => return "mm",
+        "time_of_day" => return "h",
+        "latitude" | "north" | "head_tilt" | "boom_heading" => return "°",
+        "shadow_density" | "morph_blend" | "sun_intensity" => return "%",
+        "f_stop" | "day_of_year" | "turbidity" | "shake_seed" | "shake_speed" => return "",
+        _ => {}
+    }
     if [
-        "radius", "size", "height", "width", "length", "offset", "distance",
+        "radius", "size", "height", "width", "length", "offset", "distance", "separation", "softness", "clip", "amount",
     ]
     .iter()
     .any(|k| n.contains(k))
@@ -55,6 +65,38 @@ fn unit_for(name: &str) -> &'static str {
         "%"
     } else {
         ""
+    }
+}
+
+/// The choices of a field that names one of the engine's small enums.
+fn options_for_key(kind: &ObjectKind, key: &str) -> Option<Vec<String>> {
+    use forma3d_core::light::{LightKind, LinkMode};
+    use forma3d_core::scene_camera::{CameraKind, Projection, StereoMode};
+    use forma3d_core::sky::SkyKind;
+    fn all<T: serde::Serialize>(v: &[T]) -> Vec<String> {
+        v.iter().filter_map(|x| serde_json::to_value(x).ok()?.as_str().map(str::to_owned)).collect()
+    }
+    Some(match (kind, key) {
+        (ObjectKind::Light(_), "kind") => all(&LightKind::ALL),
+        (ObjectKind::Camera(_), "kind") => all(&CameraKind::ALL),
+        (ObjectKind::Sky(_), "kind") => all(&SkyKind::ALL),
+        (_, "link_mode") => all(&[LinkMode::All, LinkMode::Include, LinkMode::Exclude]),
+        (_, "projection") => all(&[Projection::Perspective, Projection::Parallel]),
+        (_, "stereo_mode") => all(&[StereoMode::Anaglyph, StereoMode::SideBySide, StereoMode::LeftEye, StereoMode::RightEye]),
+        _ => return None,
+    })
+}
+
+/// Fields that name another object (an object picker).
+const OBJECT_FIELDS: [&str; 4] = ["look_at", "focus_object", "morph_from", "morph_to"];
+
+/// Settings the Attribute Manager hides for this kind of object.
+fn hidden_for(kind: &ObjectKind) -> Vec<&'static str> {
+    match kind {
+        ObjectKind::Light(l) => l.hidden_fields().to_vec(),
+        ObjectKind::Camera(c) => c.hidden_fields(),
+        ObjectKind::Sky(s) => s.hidden_fields().to_vec(),
+        _ => Vec::new(),
     }
 }
 
@@ -109,6 +151,8 @@ fn object_json(k: &ObjectKind) -> Option<Value> {
         ObjectKind::Generator(g) => serde_json::to_value(g).ok(),
         ObjectKind::Deformer(d) => serde_json::to_value(d).ok(),
         ObjectKind::Light(l) => serde_json::to_value(l).ok(),
+        ObjectKind::Camera(c) => serde_json::to_value(c).ok(),
+        ObjectKind::Sky(s) => serde_json::to_value(s).ok(),
         _ => None,
     }
 }
@@ -126,6 +170,12 @@ fn write_json(k: &mut ObjectKind, v: Value) -> bool {
             .is_ok(),
         ObjectKind::Light(l) => serde_json::from_value::<forma3d_core::light::Light>(v)
             .map(|n| *l = n.sanitized())
+            .is_ok(),
+        ObjectKind::Camera(c) => serde_json::from_value::<forma3d_core::scene_camera::SceneCamera>(v)
+            .map(|n| *c = n.sanitized())
+            .is_ok(),
+        ObjectKind::Sky(sky) => serde_json::from_value::<forma3d_core::sky::Sky>(v)
+            .map(|n| *sky = n.sanitized())
             .is_ok(),
         _ => false,
     }
@@ -177,8 +227,22 @@ fn ObjectFields(id: ObjectId) -> impl IntoView {
     let app = app();
     move || {
         let json = app.read(|e| e.scene.get(id).and_then(|o| object_json(&o.kind)));
+        let (hidden, kind) = app.read(|e| e.scene.get(id).map(|o| (hidden_for(&o.kind), o.kind.clone()))).unwrap_or((Vec::new(), ObjectKind::Null));
+        // Other objects, for the object pickers.
+        let others: Vec<(String, String)> = app.read(|e| {
+            let mut v = vec![(String::new(), "None".to_owned())];
+            e.scene.walk(|o, _| {
+                if o.id != id {
+                    v.push((o.id.to_string(), o.name.clone()));
+                }
+            });
+            v
+        });
+        let name_of = move |oid: u64| app.read(|e| e.scene.get(oid).map(|o| o.name.clone()).unwrap_or_else(|| "(deleted)".into()));
         let extra = app.read(|e| match e.scene.get(id).map(|o| &o.kind) {
-            Some(ObjectKind::Polygon(m)) => Some(format!("{} points, {} polygons. Edit them in the classic app's Points, Edges and Polygons modes (coming to this interface next).", m.points.len(), m.polys.len())),
+            Some(ObjectKind::Polygon(m)) => Some(format!("{} points, {} polygons. Edit them in the Points, Edges and Polygons modes.", m.points.len(), m.polys.len())),
+            Some(ObjectKind::Camera(_)) => Some(if e.scene.render_camera == Some(id) { "This is the render camera.".to_owned() } else { "Cameras > Use as Render Camera renders through it; Cameras > Look Through shows its view.".to_owned() }),
+            Some(ObjectKind::Sky(s)) if s.kind == forma3d_core::sky::SkyKind::Physical => Some("Daylight for the place and time: the sun moves with Time Of Day, Day Of Year and Latitude.".to_owned()),
             Some(ObjectKind::Spline(s)) => Some(format!("{} points{}.", s.points.len(), if s.closed { ", closed" } else { "" })),
             Some(ObjectKind::Null) => Some("A null has no settings of its own: use it to group and move objects together.".into()),
             _ => None,
@@ -189,10 +253,53 @@ fn ObjectFields(id: ObjectId) -> impl IntoView {
             .and_then(fields_of)
             .map(|f| {
                 f.iter()
+                    .filter(|(k, _)| !hidden.contains(&k.as_str()))
                     .map(|(k, v)| {
                         let key = k.clone();
                         let label = pretty(k);
                         let unit = unit_for(k);
+                        if OBJECT_FIELDS.contains(&k.as_str()) {
+                            let cur = v.as_u64().map(|x| x.to_string()).unwrap_or_default();
+                            return view! {
+                                <div class="lbl">
+                                    <span>{label}</span>
+                                    <Choice
+                                        options=others.clone()
+                                        value=Signal::derive(move || cur.clone())
+                                        on_change=Callback::new(move |nv: String| {
+                                            let v = nv.parse::<u64>().map(Value::from).unwrap_or(Value::Null);
+                                            set_field(id, key.clone(), None, v)
+                                        })
+                                    />
+                                </div>
+                            }
+                            .into_any();
+                        }
+                        if k == "link_objects" {
+                            let ids: Vec<u64> = v.as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+                            let names = if ids.is_empty() { "None".to_owned() } else { ids.iter().map(|&i| name_of(i)).collect::<Vec<_>>().join(", ") };
+                            let (add_key, clear_key) = (key.clone(), key.clone());
+                            return view! {
+                                <div class="lbl">
+                                    <span>"Objects"</span>
+                                    <span class="linked" title=names.clone()>{names.clone()}</span>
+                                </div>
+                                <div class="row-btns">
+                                    <button class="btn" on:click=move |_| {
+                                        let sel: Vec<u64> = app.read(|e| e.selection.iter().copied().filter(|&s| s != id).collect());
+                                        let mut all = ids.clone();
+                                        for s in sel {
+                                            if !all.contains(&s) {
+                                                all.push(s);
+                                            }
+                                        }
+                                        set_field(id, add_key.clone(), None, serde_json::json!(all));
+                                    }>"Add Selected"</button>
+                                    <button class="btn" on:click=move |_| set_field(id, clear_key.clone(), None, serde_json::json!([]))>"Clear"</button>
+                                </div>
+                            }
+                            .into_any();
+                        }
                         match v {
                             Value::Number(n) => {
                                 let x = n.as_f64().unwrap_or(0.0) as f32;
@@ -223,7 +330,7 @@ fn ObjectFields(id: ObjectId) -> impl IntoView {
                                 .into_any()
                             }
                             Value::Array(a) if a.len() == 3 && a.iter().all(|x| x.is_number()) => {
-                                if k == "color" {
+                                if k.ends_with("color") {
                                     let c = [a[0].as_f64().unwrap_or(1.0) as f32, a[1].as_f64().unwrap_or(1.0) as f32, a[2].as_f64().unwrap_or(1.0) as f32];
                                     view! {
                                         <div class="lbl">
@@ -270,7 +377,7 @@ fn ObjectFields(id: ObjectId) -> impl IntoView {
                                 }
                             }
                             Value::String(s) => {
-                                let opts = options_for(s).unwrap_or_else(|| vec![s.clone()]);
+                                let opts = options_for_key(&kind, k).or_else(|| options_for(s)).unwrap_or_else(|| vec![s.clone()]);
                                 let choices: Vec<(String, String)> = opts.iter().map(|o| (o.clone(), pretty(o))).collect();
                                 let cur = s.clone();
                                 view! {

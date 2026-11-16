@@ -148,10 +148,13 @@ pub enum Panel {
     Structure,
     Assets,
     Console,
+    PictureViewer,
+    RenderQueue,
+    LightLister,
 }
 
 impl Panel {
-    pub const OPENABLE: [Panel; 12] = [
+    pub const OPENABLE: [Panel; 15] = [
         Panel::Objects,
         Panel::Attributes,
         Panel::Materials,
@@ -164,6 +167,9 @@ impl Panel {
         Panel::UvEditor,
         Panel::Footage,
         Panel::Brushes,
+        Panel::PictureViewer,
+        Panel::RenderQueue,
+        Panel::LightLister,
     ];
 
     pub fn title(self) -> &'static str {
@@ -180,6 +186,9 @@ impl Panel {
             Panel::Structure => "Structure",
             Panel::Assets => "Asset Browser",
             Panel::Console => "Console",
+            Panel::PictureViewer => "Picture Viewer",
+            Panel::RenderQueue => "Render Queue",
+            Panel::LightLister => "Light Lister",
         }
     }
 
@@ -197,6 +206,9 @@ impl Panel {
             Panel::Structure => "structure",
             Panel::Assets => "assets",
             Panel::Console => "console",
+            Panel::PictureViewer => "picture_viewer",
+            Panel::RenderQueue => "render_queue",
+            Panel::LightLister => "light_lister",
         }
     }
 
@@ -214,6 +226,9 @@ impl Panel {
             Panel::Structure => "structure",
             Panel::Assets => "assets",
             Panel::Console => "console",
+            Panel::PictureViewer => "picture",
+            Panel::RenderQueue => "render",
+            Panel::LightLister => "light",
         }
     }
 
@@ -224,6 +239,9 @@ impl Panel {
             Panel::Structure => "panel manager structure points polygons table coordinates vertex",
             Panel::Assets => "panel manager asset browser library content preset model material",
             Panel::Console => "panel manager console log messages script",
+            Panel::PictureViewer => "panel picture viewer render history image compare save",
+            Panel::RenderQueue => "panel render queue batch jobs",
+            Panel::LightLister => "panel light lister lights table intensity shadows",
             _ => "panel manager window show open",
         }
     }
@@ -432,6 +450,9 @@ pub fn panel_view(p: Panel) -> AnyView {
         Panel::Materials => view! { <crate::bottom::Materials /> }.into_any(),
         Panel::Assets => view! { <crate::bottom::Assets /> }.into_any(),
         Panel::Console => view! { <crate::bottom::Console /> }.into_any(),
+        Panel::PictureViewer => view! { <crate::render::PictureViewer /> }.into_any(),
+        Panel::RenderQueue => view! { <crate::render::RenderQueue /> }.into_any(),
+        Panel::LightLister => view! { <crate::render::LightLister /> }.into_any(),
         Panel::Coordinates => view! { <crate::bottom::Coordinates /> }.into_any(),
         Panel::Layers => view! { <crate::managers::Layers /> }.into_any(),
         Panel::Takes => view! { <crate::managers::Takes /> }.into_any(),

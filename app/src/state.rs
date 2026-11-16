@@ -73,6 +73,8 @@ pub struct App {
     /// typed so far (a second key makes a sequence).
     pub capture: RwSignal<Option<(Cmd, Option<Shortcut>)>>,
     pub capture_msg: RwSignal<String>,
+    /// Renders: the Picture Viewer's pictures, the queue, the view's render.
+    pub render: RwSignal<crate::render::RenderUi, LocalStorage>,
 }
 
 impl App {
@@ -106,6 +108,7 @@ impl App {
             loaded: RwSignal::new(false),
             capture: RwSignal::new(None),
             capture_msg: RwSignal::new(String::new()),
+            render: RwSignal::new_local(Default::default()),
         }
     }
 

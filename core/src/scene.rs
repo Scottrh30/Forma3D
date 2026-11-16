@@ -56,6 +56,10 @@ pub enum ObjectKind {
     Spline(crate::spline::Spline),
     /// A light (the Light menu).
     Light(crate::light::Light),
+    /// A camera to render through (Create > Camera).
+    Camera(crate::scene_camera::SceneCamera),
+    /// A sky around the scene (Light > Sky, Physical Sky).
+    Sky(crate::sky::Sky),
 }
 
 impl ObjectKind {
@@ -68,6 +72,8 @@ impl ObjectKind {
             ObjectKind::Polygon(_) => "Polygon",
             ObjectKind::Spline(_) => "Spline",
             ObjectKind::Light(l) => l.kind.name(),
+            ObjectKind::Camera(c) => c.kind.name(),
+            ObjectKind::Sky(s) => s.kind.name(),
         }
     }
 }
@@ -143,6 +149,12 @@ pub struct Scene {
     pub workplane: Workplane,
     #[serde(default)]
     takes: TakeSystem,
+    /// Render Settings (saved with the project).
+    #[serde(default)]
+    pub render: crate::render::RenderSettings,
+    /// The camera renders go through (None: the active view's camera).
+    #[serde(default)]
+    pub render_camera: Option<ObjectId>,
 }
 
 fn first_id() -> u64 {
@@ -241,6 +253,8 @@ impl Scene {
             next_layer: 1,
             workplane: Workplane::default(),
             takes: TakeSystem::default(),
+            render: Default::default(),
+            render_camera: None,
         }
     }
 
@@ -900,6 +914,51 @@ impl Scene {
             return false;
         }
         self.layer_flag(id, LayerFlag::View)
+    }
+
+    /// Whether the object shows in renders: its (and its parents') render
+    /// visibility, and its layer's Render switch.
+    pub fn render_visible(&self, id: ObjectId) -> bool {
+        if !self.layer_flag(id, LayerFlag::Render) {
+            return false;
+        }
+        let mut cur = Some(id);
+        for _ in 0..MAX_DEPTH {
+            let Some(o) = cur.and_then(|c| self.objects.get(&c)) else { return true };
+            match o.vis_render {
+                Visibility::On => return true,
+                Visibility::Off => return false,
+                Visibility::Default => cur = o.parent,
+            }
+        }
+        true
+    }
+
+    /// The world matrix as the object acts: a light or camera with a Look At
+    /// object turns to face it (a camera rig's own pose comes from
+    /// `scene_camera::pose`).
+    pub fn effective_world(&self, id: ObjectId) -> Mat4 {
+        let world = self.world_matrix(id);
+        let target = match self.objects.get(&id).map(|o| &o.kind) {
+            Some(ObjectKind::Light(l)) => l.look_at,
+            Some(ObjectKind::Camera(c)) => c.look_at,
+            _ => None,
+        };
+        match target.filter(|t| *t != id && self.objects.contains_key(t)) {
+            Some(t) => crate::scene_camera::aimed(world, self.world_position(t)),
+            None => world,
+        }
+    }
+
+    /// The cameras in the scene, in hierarchy order.
+    pub fn cameras(&self) -> Vec<(ObjectId, String)> {
+        let mut out = Vec::new();
+        self.walk(|o, _| {
+            if matches!(o.kind, ObjectKind::Camera(_)) {
+                out.push((o.id, o.name.clone()));
+            }
+        });
+        out
     }
 
     /// Objects on a locked layer can't be picked or changed in the viewport.

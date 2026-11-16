@@ -772,7 +772,7 @@ pub fn for_light(kind: crate::light::LightKind) -> Icon {
         L::Point => Icon::LightPoint,
         L::Spot => Icon::LightSpot,
         L::Omni => Icon::LightOmni,
-        L::Infinite => Icon::LightInfinite,
+        L::Infinite | L::Parallel => Icon::LightInfinite,
         L::Dome => Icon::LightDome,
         L::Sun => Icon::LightSun,
     }
@@ -799,6 +799,8 @@ pub fn for_kind(kind: &crate::scene::ObjectKind) -> Icon {
         ObjectKind::Null => Icon::Null,
         ObjectKind::Spline(_) => Icon::Spline,
         ObjectKind::Light(l) => for_light(l.kind),
+        ObjectKind::Camera(_) => Icon::Null,
+        ObjectKind::Sky(_) => Icon::LightDome,
         ObjectKind::Primitive(p) => for_primitive(p.kind()),
         ObjectKind::Generator(g) => match g.kind() {
             G::Subdivision => Icon::Subdivision,
