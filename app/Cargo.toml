@@ -1,0 +1,26 @@
+[package]
+name = "forma3d-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Forma3D's Leptos interface (runs in the Tauri window)"
+
+[dependencies]
+forma3d-core = { path = "../core" }
+leptos = { version = "0.8", features = ["csr"] }
+glam = { version = "0.34", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+send_wrapper = "0.6"
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "webgpu", "webgl"] }
+web-sys = { version = "0.3", features = [
+    "Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlInputElement",
+    "DomRect", "PointerEvent", "MouseEvent", "WheelEvent", "KeyboardEvent", "Event", "EventTarget",
+    "ResizeObserver", "ResizeObserverEntry", "CssStyleDeclaration", "Blob", "BlobPropertyBag", "Url",
+    "HtmlAnchorElement", "FileList", "File", "Performance", "DataTransfer", "DragEvent", "Navigator", "Clipboard",
+] }

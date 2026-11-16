@@ -3,32 +3,14 @@
 // A few small helpers exist for tests and upcoming features.
 #![allow(dead_code)]
 
-mod assets;
-mod camera;
-mod component;
-mod csg;
-mod deformer;
-mod editmesh;
-mod editor;
-mod generator;
-mod gizmo;
-mod history;
+// The engine lives in forma3d-core; re-exporting its modules here keeps the
+// interface's `crate::scene::...` paths working.
+pub use forma3d_core::*;
+
 mod icons;
-mod mesh;
-mod meshops;
-mod picking;
-mod primitive;
-mod renderer;
-mod scene;
-mod spline;
-mod light;
-mod layers;
-mod snap;
-mod takes;
-mod pen;
-mod tessellate;
 mod theme;
 mod ui;
+mod view_callback;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {

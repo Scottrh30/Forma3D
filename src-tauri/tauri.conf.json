@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Forma3D",
+  "version": "0.2.0",
+  "identifier": "com.forma3d.app",
+  "build": {
+    "beforeDevCommand": { "script": "trunk serve --port 1420", "cwd": "../app", "wait": false },
+    "beforeBuildCommand": { "script": "trunk build --release", "cwd": "../app" },
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../app/dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Forma3D",
+        "width": 1480,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 560,
+        "center": true,
+        "decorations": false,
+        "shadow": true,
+        "theme": "Dark",
+        "backgroundColor": "#16171a"
+      }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png", "icons/icon.ico"],
+    "shortDescription": "3D modelling",
+    "longDescription": "Forma3D, a 3D modelling app with a Cinema 4D-style interface.",
+    "windows": { "webviewInstallMode": { "type": "downloadBootstrapper" } }
+  }
+}

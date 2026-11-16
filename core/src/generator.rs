@@ -321,7 +321,7 @@ fn apply(g: &Generator, input: Geo) -> Geo {
 /// Re-forms the quads that primitives are built from: two consecutive triangles
 /// `(a, b, c)` and `(a, c, d)` sharing the edge `a-c` become `(a, b, c, d)`.
 /// Mirrored copies (reversed winding) are recognised too. Everything else stays a triangle.
-pub(crate) fn polygons(geo: &Geo) -> Vec<Vec<u32>> {
+pub fn polygons(geo: &Geo) -> Vec<Vec<u32>> {
     let tris: Vec<[u32; 3]> = geo.tris.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
     let mut out = Vec::with_capacity(tris.len() / 2 + 1);
     let mut i = 0;
@@ -354,7 +354,7 @@ fn merge_pair(t1: [u32; 3], t2: [u32; 3]) -> Option<[u32; 4]> {
 }
 
 /// Merges vertices that share a position and drops faces that collapse.
-pub(crate) fn weld(geo: &Geo, faces: Vec<Vec<u32>>) -> (Vec<Vec3>, Vec<Vec<u32>>) {
+pub fn weld(geo: &Geo, faces: Vec<Vec<u32>>) -> (Vec<Vec3>, Vec<Vec<u32>>) {
     let mut index: HashMap<[i64; 3], u32> = HashMap::new();
     let mut pos: Vec<Vec3> = Vec::new();
     let remap: Vec<u32> = geo
@@ -390,12 +390,12 @@ pub(crate) fn weld(geo: &Geo, faces: Vec<Vec<u32>>) -> (Vec<Vec3>, Vec<Vec<u32>>
     (pos, faces)
 }
 
-pub(crate) fn edge_key(a: u32, b: u32) -> (u32, u32) {
+pub fn edge_key(a: u32, b: u32) -> (u32, u32) {
     if a < b { (a, b) } else { (b, a) }
 }
 
 /// One Catmull-Clark step. Works on any polygons; the result is all quads.
-pub(crate) fn catmull_clark(pos: &[Vec3], faces: &[Vec<u32>]) -> (Vec<Vec3>, Vec<Vec<u32>>) {
+pub fn catmull_clark(pos: &[Vec3], faces: &[Vec<u32>]) -> (Vec<Vec3>, Vec<Vec<u32>>) {
     let face_pts: Vec<Vec3> = faces
         .iter()
         .map(|f| f.iter().map(|&i| pos[i as usize]).sum::<Vec3>() / f.len() as f32)

@@ -7,7 +7,8 @@ use crate::editor::{Editor, NavMode, ViewLayout};
 use crate::gizmo::{self, Axis, CoordSystem, Drag, DragView, GizmoFrame, Handle, Tool};
 use crate::picking;
 use crate::primitive::PrimitiveKind;
-use crate::renderer::{self, CameraUniform, DrawItem, FrameScene, PostUniform, ViewCallback};
+use crate::renderer::{self, CameraUniform, DrawItem, FrameScene, PostUniform, ViewDraw};
+use crate::view_callback::ViewCallback;
 use crate::theme;
 use eframe::egui::{self, Align2, Color32, FontId, PointerButton, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 use glam::{Vec2, Vec3};
@@ -324,14 +325,14 @@ fn view(
     let size_px = [(rect.width() * ppp).round().max(1.0) as u32, (rect.height() * ppp).round().max(1.0) as u32];
     ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
         rect,
-        ViewCallback {
+        ViewCallback(ViewDraw {
             slot,
             camera: uniform,
             post: PostUniform::new(&cam, aspect, size_px, fx),
             size_px,
             grid: grid.vertices,
             scene: frame.clone(),
-        },
+        }),
     ));
 
     let snap_ctx = SnapCtx { objects, grid_unit };

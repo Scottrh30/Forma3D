@@ -1,5 +1,6 @@
-//! The 3D viewport renderer. It draws into egui's own render pass through an
-//! `egui_wgpu` paint callback. Shadows add a shadow-map pass per view; SSAO
+//! The 3D viewport renderer. `ViewDraw::prepare` records the offscreen passes
+//! (shadows, SSAO) and `ViewDraw::paint` draws into the caller's render pass,
+//! so any host can use it: egui's paint callback or a web canvas. Shadows add a shadow-map pass per view; SSAO
 //! and Post Effects render the view offscreen first and composite it.
 //!
 //! One callback is issued per visible view. Each gets a *slot* holding its
@@ -9,15 +10,13 @@
 use crate::camera::{Camera, ViewKind};
 use crate::mesh::{Mesh, Vertex};
 use bytemuck::{Pod, Zeroable};
-use eframe::egui;
-use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait};
-use eframe::wgpu;
+
 use glam::{Mat3, Mat4, Vec3};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
-/// Must match `NativeOptions::depth_buffer = 32` (see `egui_wgpu::depth_format_from_bits`).
+/// The depth format of the pass `ViewDraw::paint` draws into.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 const MAX_GRID_VERTICES: usize = 4096;
@@ -1266,7 +1265,8 @@ impl FrameScene {
     }
 }
 
-pub struct ViewCallback {
+/// One view's drawing for one frame.
+pub struct ViewDraw {
     pub slot: usize,
     pub camera: CameraUniform,
     pub post: PostUniform,
@@ -1276,18 +1276,9 @@ pub struct ViewCallback {
     pub scene: Arc<FrameScene>,
 }
 
-impl CallbackTrait for ViewCallback {
-    fn prepare(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        _screen: &egui_wgpu::ScreenDescriptor,
-        encoder: &mut wgpu::CommandEncoder,
-        resources: &mut CallbackResources,
-    ) -> Vec<wgpu::CommandBuffer> {
-        let Some(gpu) = resources.get_mut::<GpuResources>() else {
-            return Vec::new();
-        };
+impl ViewDraw {
+    /// Uploads this view's data and records its offscreen passes.
+    pub fn prepare(&self, gpu: &mut GpuResources, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder) {
         gpu.ensure_slot(device, self.slot);
         let grid_len = self.grid.len().min(MAX_GRID_VERTICES);
         {
@@ -1339,7 +1330,7 @@ impl CallbackTrait for ViewCallback {
             gpu.ensure_offscreen(device, self.slot, self.size_px);
             let slot = &gpu.slots[self.slot];
             let Some(off) = slot.offscreen.as_ref() else {
-                return Vec::new();
+                return;
             };
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1391,11 +1382,10 @@ impl CallbackTrait for ViewCallback {
                 }
             }
         }
-        Vec::new()
     }
 
-    fn paint(&self, _info: egui::PaintCallbackInfo, pass: &mut wgpu::RenderPass<'static>, resources: &CallbackResources) {
-        let Some(gpu) = resources.get::<GpuResources>() else { return };
+    /// Draws the view into `pass` (colour + `DEPTH_FORMAT` depth).
+    pub fn paint(&self, gpu: &GpuResources, pass: &mut wgpu::RenderPass<'_>) {
         let Some(slot) = gpu.slots.get(self.slot) else { return };
         match slot.offscreen.as_ref() {
             Some(off) if slot.composite => {

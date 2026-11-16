@@ -266,6 +266,10 @@ impl MeshCache {
     pub fn len(&self) -> usize {
         self.map.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
 }
 
 /// One visible object, ready to draw and to pick.
@@ -1521,6 +1525,24 @@ impl Editor {
         self.saved = self.scene.clone();
         self.file_path = Some(path.to_path_buf());
         self.status = format!("Saved {}", path.display());
+        Ok(())
+    }
+
+    /// The scene as file text, marked as saved to `path`. For hosts that
+    /// write the file themselves (the Tauri app).
+    pub fn save_json(&mut self, path: PathBuf) -> Result<String, String> {
+        let json = self.scene.to_json().map_err(|e| e.to_string())?;
+        self.saved = self.scene.clone();
+        self.status = format!("Saved {}", path.display());
+        self.file_path = Some(path);
+        Ok(json)
+    }
+
+    /// Opens scene file text read by the host from `path`.
+    pub fn open_json(&mut self, text: &str, path: PathBuf) -> Result<(), String> {
+        let scene = Scene::from_json(text).map_err(|e| format!("{}: {e}", path.display()))?;
+        self.status = format!("Opened {}", path.display());
+        self.replace_scene(scene, Some(path));
         Ok(())
     }
 
