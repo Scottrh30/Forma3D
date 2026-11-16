@@ -1,0 +1,28 @@
+[package]
+name = "forma3d"
+version = "0.1.0"
+edition = "2024"
+description = "Forma3D: a Rust 3D modelling app with a Cinema 4D-style interface"
+license = "MIT"
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+# egui_dock 0.21 is built against egui 0.36, so eframe must stay on 0.36 too.
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
+egui_dock = { version = "0.21", features = ["serde"] }
+glam = { version = "0.34", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Keep debug builds usable: optimise dependencies (egui, wgpu) even in dev.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Release builds (the .exe): one optimised, stripped binary.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -1,0 +1,30 @@
+# Builds Forma3D.exe on GitHub's Windows machines. Push the project to a
+# GitHub repository, then open Actions > "Windows build" > the latest run and
+# download the "Forma3D-windows" artifact (or click "Run workflow" to build now).
+name: Windows build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/forma3d.exe dist/Forma3D.exe
+          Copy-Item README.md dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Forma3D-windows
+          path: dist/
