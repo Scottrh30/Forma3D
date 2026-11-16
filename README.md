@@ -21,9 +21,9 @@ compiles egui/wgpu, so it takes a few minutes.
 - **On a Windows PC:** install Rust from https://rustup.rs (default options), then double-click
   `build-windows.bat`. It builds a release version and puts it at `dist\Forma3D.exe`, a single file that runs
   on its own (no console window). Settings, shortcuts, workspaces and saved assets go in `%APPDATA%\forma3d`.
-- **Without building it yourself:** push the project to a GitHub repository; the included workflow
-  (`.github/workflows/windows.yml`) builds and tests it on GitHub's Windows machines, and the `.exe` is the
-  "Forma3D-windows" download on the run's page (Actions tab).
+- **Without building it yourself:** every push to `main` is built and tested on GitHub's Windows machines
+  (`.github/workflows/windows.yml`) and published as the repository's latest release:
+  https://github.com/Scottrh30/forma3d/releases/latest/download/Forma3D.exe
 - Forma3D uses DirectX 12 or Vulkan on Windows through wgpu, so any graphics card from the last ten years works.
 
 ## What works (milestone 1)

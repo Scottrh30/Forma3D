@@ -1,11 +1,14 @@
-# Builds Forma3D.exe on GitHub's Windows machines. Push the project to a
-# GitHub repository, then open Actions > "Windows build" > the latest run and
-# download the "Forma3D-windows" artifact (or click "Run workflow" to build now).
+# Builds Forma3D.exe on GitHub's Windows machines on every push (or with
+# "Run workflow"). Each build is the "Forma3D-windows" download on its run's
+# page; builds of main are also published as the "latest" release.
 name: Windows build
 
 on:
   push:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -28,3 +31,15 @@ jobs:
         with:
           name: Forma3D-windows
           path: dist/
+      # Every push to main also updates the "latest" release, so the newest
+      # build is always at /releases/latest/download/Forma3D.exe.
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Forma3D (latest build)
+          body: Windows build of the newest commit on main. Download Forma3D.exe and run it.
+          prerelease: false
+          make_latest: true
+          files: dist/Forma3D.exe
