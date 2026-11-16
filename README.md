@@ -11,7 +11,7 @@ This is original code. It does not use any Blender source, and it uses no Cinema
 | Folder | What it is |
 |---|---|
 | `core/` | **forma3d-core**: the engine. Scene, meshes and their tools, editor state with undo, and the wgpu viewport renderer. No interface code. |
-| `app/` | **forma3d-app**: the interface, written with [Leptos](https://leptos.dev) and compiled to WebAssembly together with the engine. The 3D view draws with WebGPU (WebGL 2 where WebGPU is missing). |
+| `app/` | **forma3d-app**: the interface, written with [Leptos](https://leptos.dev) and compiled to WebAssembly together with the engine. The 3D view draws through WebGL 2 (add `?webgpu` to the address to try WebGPU). |
 | `src-tauri/` | **forma3d**: the [Tauri](https://tauri.app) desktop shell. It opens the window and does what a web page can't: native Open / Save dialogs and file access. |
 | `classic/` | **forma3d-classic**: the original egui interface. It still has everything the new interface hasn't caught up with yet (see below). |
 

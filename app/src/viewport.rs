@@ -63,9 +63,12 @@ fn make_depth(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
 // Natively (only for `cargo check`) the canvas surface can't exist.
 #[cfg_attr(not(target_arch = "wasm32"), allow(unreachable_code, unused_variables))]
 async fn init_gpu(canvas: web_sys::HtmlCanvasElement) -> Result<(Gpu, String), String> {
+    // WebGL 2 by default: it is the path that has been checked end to end.
+    // Add `?webgpu` to the page address to try WebGPU instead.
+    let want_webgpu = web_sys::window().and_then(|w| w.location().search().ok()).is_some_and(|q| q.contains("webgpu"));
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-    desc.backends = wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL;
-    let instance = wgpu::util::new_instance_with_webgpu_detection(desc).await;
+    desc.backends = if want_webgpu { wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL } else { wgpu::Backends::GL };
+    let instance = if want_webgpu { wgpu::util::new_instance_with_webgpu_detection(desc).await } else { wgpu::Instance::new(desc) };
     #[cfg(target_arch = "wasm32")]
     let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone())).map_err(|e| e.to_string())?;
     #[cfg(not(target_arch = "wasm32"))]

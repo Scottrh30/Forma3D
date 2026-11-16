@@ -16,7 +16,7 @@ const browser = await chromium.launch({ args });
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });
 page.on('console', m => log.push(`[${m.type()}] ${m.text()}`));
 page.on('pageerror', e => log.push(`[pageerror] ${e.message}`));
-await page.goto(url);
+await page.goto(webgpu ? url + '?webgpu' : url);
 await page.waitForTimeout(6000);
 await page.screenshot({ path: `${out}/1-start.png` });
 
