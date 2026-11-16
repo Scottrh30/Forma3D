@@ -175,7 +175,37 @@ in both). Differences of detail:
   (Area, Point, Spot, Omni); Inner and Outer Angle (Spot); Size X/Y (Area). Point lights fade with distance by
   default, Omni lights don't. The Dome lights everything evenly from the sky; the Sun's colour follows its height
   (white at noon, orange low down, gone below the horizon) and it brings a soft blue sky. With Options > Shadows
-  on, the brightest light that casts shadows casts them. Lights have their own viewport Filter.
+  on, the brightest light that casts shadows casts them. Lights have their own viewport Filter. Also in the Light
+  menu: **Parallel** (like Infinite, but only in front of its plane), **Target Light** (a spot aimed at a new Null
+  through its Look At field) and the **Light Lister** (every light in one table). Lights have Shadow Softness,
+  Density and Colour, and **light linking**: Include or Exclude a list of objects (with their children).
+- **Skies** (Light menu): **Sky** is a colour gradient (zenith, horizon, ground); **Physical Sky** is daylight
+  for a Latitude, Day Of Year and Time Of Day, with haze (Turbidity) and a sun that moves with the time. Both light
+  the scene and show behind it in renders.
+- **Cameras** (Create > Camera): **Camera**, **Target Camera** (aims at a Null made with it), **Stereo Camera**
+  (anaglyph, side by side or one eye), **Motion Camera** (handheld shake over time), **Camera Morph** (blends two
+  selected cameras) and **Camera Crane** (column, boom and head). Settings: focal length and sensor (field of
+  view), perspective or parallel projection, near clip, depth of field (focus distance or object, f-stop). In the
+  view's **Cameras** menu: **Look Through Camera** (navigating then moves the camera), **Editor Camera**, **Use as
+  Render Camera** and **Focus on Selection**.
+- **Rendering** (the **Render** menu, Tauri app): **Render View** (Ctrl+R) renders over the active view;
+  **Interactive Render Region** (Alt+R) keeps re-rendering the middle of the view as you work; **Render to Picture
+  Viewer** (Shift+R) renders the frames in Render Settings and keeps every picture in the **Picture Viewer**
+  (history, passes, frames, zoom, A/B compare with a split, Save as PNG). **Edit Render Settings** (Ctrl+B):
+  - Renderer: **Standard** (direct light, hard or soft shadows, Fresnel reflections, ambient light) or
+    **Physical** (path tracing with global illumination, area shadows and depth of field), both ray traced
+    through a bounding volume hierarchy; or **Viewport (Hardware)**, the viewport's own GPU shading.
+  - Output size with presets, frame range (current, all, manual with step); saving as PNG, 16-bit PNG or JPEG with
+    file name tokens (`$prj $camera $take $frame $pass $res $width $height $renderer $date $time`). Relative names go
+    next to the project (or into Pictures/Forma3D); in a browser the files download.
+  - Multi-Pass: Diffuse, Specular, Shadow, Ambient Occlusion, Depth, Normal, Object ID, Material ID and Alpha.
+  - Anti-aliasing (samples, Box or Gaussian filter), ray depth, background colour, Ambient Occlusion, **Sketch and
+    Toon** (banded shading with outlines) or **Contour** lines, Material Override, and colour management (view
+    transform Standard, ACES, Filmic or Raw; working space linear sRGB or ACEScg; exposure).
+
+  The desktop app renders on every CPU core in the background; a browser renders in small slices so the
+  interface keeps working. The **Render Queue** renders projects one after another, each with the settings it
+  had when it was added.
 - **Splines** (Create > Spline > Spline Pen, the pen button on the top palette, or the icon bar): click to place
   corner points, click-drag to pull out Bézier tangents, click the first point to close, click on the curve to insert
   a point (the shape is kept), drag a point or a handle to move it (Shift breaks the handle pair), Backspace removes
@@ -345,7 +375,7 @@ All open from Window > Panels; the Model workspace has them as tabs.
 
 - Not built yet from the Interface section of the command reference, because the systems they work on don't exist
   yet: UV Points / UV Polygons and Texture modes (meshes have no UV coordinates), Point Level Animation (no
-  keyframes), Picture Viewer and Render Queue / Team Render (no final renderer), Node Editor and XPresso (no node
+  keyframes), Team Render (network rendering), Node Editor and XPresso (no node
   system), Python scripting and extensions, the Particle Property Manager, and the legacy Content Browser (the Asset
   Browser replaces it).
 - Asset Browser tiles are drawn from the objects' icons and colours, not rendered previews.
@@ -377,9 +407,11 @@ All open from Window > Panels; the Model workspace has them as tabs.
 - Undo still snapshots the whole scene, which gets heavy with very large meshes.
 - No import/export formats other than the JSON scene file.
 - The timeline only moves a time cursor. There are no keyframes yet.
-- "Visible in Renderer" is stored but there is no renderer.
+- The final renderer shades every material as a plain colour with a little Fresnel reflection (materials have
+  only a colour channel); there are no textures, transparency, emission or HDR environments. Motion blur and
+  render-time animation (keyframes) don't exist yet. 16-bit PNG holds the display colours, not linear HDR.
+- The Viewport (Hardware) engine can't show depth of field or stereo and renders one pass.
 - Viewport Reflections show an environment, not other objects (no screen-space reflections yet).
-  Shadows come from the single camera-attached key light only; scene lights don't exist yet.
 - Viewport Options are global, not per view, and are not saved with the scene.
 - Tessellation skips meshes above 150,000 triangles.
 - The gizmo acts on the active (last selected) object only.
