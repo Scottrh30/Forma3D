@@ -81,7 +81,13 @@ pub fn apply(ctx: &egui::Context) {
     w.open.weak_bg_fill = BG_HOVER;
     w.open.corner_radius = radius;
 
-    ctx.set_visuals(v);
+    // Always dark: without this, a light Windows / macOS theme switches the
+    // menu bar, toolbars, palette and status bar to egui's light look.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    // The window's own title bar too (Windows draws it from the window theme).
+    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark));
+    ctx.set_visuals_of(egui::Theme::Dark, v.clone());
+    ctx.set_visuals_of(egui::Theme::Light, v);
 
     ctx.global_style_mut(|style| {
         style.spacing.item_spacing = egui::vec2(6.0, 4.0);
