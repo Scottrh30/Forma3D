@@ -188,6 +188,8 @@ in both). Differences of detail:
   view), perspective or parallel projection, near clip, depth of field (focus distance or object, f-stop). In the
   view's **Cameras** menu: **Look Through Camera** (navigating then moves the camera), **Editor Camera**, **Use as
   Render Camera** and **Focus on Selection**.
+- **Window**: the title bar has Full Screen (F11), Minimize, Maximize / Restore and Close; double-click the title
+  bar to maximize. The same commands are in Window and the Commander. In a browser, Full Screen fills the screen.
 - **Rendering** (the **Render** menu, Tauri app): **Render View** (Ctrl+R) renders over the active view;
   **Interactive Render Region** (Alt+R) keeps re-rendering the middle of the view as you work; **Render to Picture
   Viewer** (Shift+R) renders the frames in Render Settings and keeps every picture in the **Picture Viewer**

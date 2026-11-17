@@ -94,6 +94,72 @@ pub fn window_call(method: &str) {
     }
 }
 
+/// The current Tauri window.
+fn current_window(t: &JsValue) -> Result<JsValue, String> {
+    let wins = get(t, "window")?;
+    let f: Function = get(&wins, "getCurrentWindow")?.dyn_into().map_err(|_| "no getCurrentWindow")?;
+    f.call0(&wins).map_err(js_err)
+}
+
+/// Calls an async window method and waits for its answer.
+async fn window_ask(method: &str, arg: Option<JsValue>) -> Result<JsValue, String> {
+    let t = tauri().ok_or("not in the desktop app")?;
+    let win = current_window(&t)?;
+    let m: Function = get(&win, method)?.dyn_into().map_err(|_| "no such method")?;
+    let p = match arg {
+        Some(a) => m.call1(&win, &a),
+        None => m.call0(&win),
+    }
+    .map_err(js_err)?;
+    match p.dyn_into::<js_sys::Promise>() {
+        Ok(p) => JsFuture::from(p).await.map_err(js_err),
+        Err(v) => Ok(v),
+    }
+}
+
+/// Whether the window is (maximized, full screen).
+pub async fn window_state() -> (bool, bool) {
+    if tauri().is_some() {
+        let max = window_ask("isMaximized", None).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
+        let full = window_ask("isFullscreen", None).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
+        (max, full)
+    } else {
+        (false, browser_fullscreen())
+    }
+}
+
+fn browser_fullscreen() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| Reflect::get(&d, &"fullscreenElement".into()).ok())
+        .is_some_and(|e| !e.is_null() && !e.is_undefined())
+}
+
+/// Full screen on or off (the desktop window, or the page in a browser).
+pub async fn toggle_fullscreen() {
+    if tauri().is_some() {
+        let full = window_ask("isFullscreen", None).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
+        if let Err(e) = window_ask("setFullscreen", Some(JsValue::from_bool(!full))).await {
+            web_sys::console::warn_1(&format!("full screen: {e}").into());
+        }
+        return;
+    }
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
+    let (target, method): (JsValue, &str) = if browser_fullscreen() {
+        (doc.clone().into(), "exitFullscreen")
+    } else {
+        match doc.document_element() {
+            Some(e) => (e.into(), "requestFullscreen"),
+            None => return,
+        }
+    };
+    if let Ok(f) = Reflect::get(&target, &method.into()).and_then(|f| f.dyn_into::<Function>().map_err(|v| v)) {
+        if let Ok(p) = f.call0(&target).and_then(|p| p.dyn_into::<js_sys::Promise>().map_err(|v| v)) {
+            let _ = JsFuture::from(p).await;
+        }
+    }
+}
+
 fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
 }

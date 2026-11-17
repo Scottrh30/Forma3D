@@ -226,7 +226,7 @@ pub fn menu(name: &str) -> Vec<Entry> {
             v.push(Sub("Workspace", ws));
             v.push(C(Cmd::ResetLayout));
             v.push(Sub("Panels", cmds(Panel::OPENABLE.map(Cmd::ShowPanel))));
-            v.extend([Sep, C(Cmd::ToggleTimeline), Sep, Widget("projects")]);
+            v.extend([Sep, C(Cmd::ToggleTimeline), Sep, C(Cmd::Minimize), C(Cmd::ToggleMaximize), C(Cmd::ToggleFullscreen), Sep, Widget("projects")]);
             v
         }
         "Help" => vec![
@@ -439,6 +439,12 @@ pub fn TitleBar() -> impl IntoView {
         app.project_count()
     };
     let key = move || app.keymap.with(|k| k.label(Cmd::Commander));
+    // (maximized, full screen): kept current as the window changes size.
+    let win_state = RwSignal::new((false, false));
+    let refresh = move || leptos::task::spawn_local(async move { win_state.set(host::window_state().await) });
+    refresh();
+    let _ = window_event_listener(leptos::ev::resize, move |_| refresh());
+    let _ = window_event_listener(leptos::ev::fullscreenchange, move |_| refresh());
     view! {
         <div class="title" data-tauri-drag-region>
             <div class="logo">
@@ -462,12 +468,31 @@ pub fn TitleBar() -> impl IntoView {
                 <b>{title}{move || if dirty() { " •" } else { "" }}</b>
                 {move || if count() > 1 { format!(" · {} projects", count()) } else { String::new() }}
             </div>
+            <button
+                class="wbtn"
+                title=move || if win_state.get().1 { "Leave Full Screen (F11)" } else { "Full Screen (F11)" }
+                on:click=move |_| commands::run(app, Cmd::ToggleFullscreen)
+            >
+                {move || if win_state.get().1 {
+                    view! { <svg viewBox="0 0 12 12"><path d="M4.5 1v3.5H1M7.5 1v3.5H11M4.5 11V7.5H1M7.5 11V7.5H11" /></svg> }.into_any()
+                } else {
+                    view! { <svg viewBox="0 0 12 12"><path d="M1 4.5V1h3.5M11 4.5V1H7.5M1 7.5V11h3.5M11 7.5V11H7.5" /></svg> }.into_any()
+                }}
+            </button>
             <Show when=host::in_tauri>
-                <button class="wbtn" title="Minimize" on:click=|_| host::window_call("minimize")>
+                <button class="wbtn" title="Minimize" on:click=move |_| commands::run(app, Cmd::Minimize)>
                     <svg viewBox="0 0 12 12"><path d="M1 6h10" /></svg>
                 </button>
-                <button class="wbtn" title="Maximize" on:click=|_| host::window_call("toggleMaximize")>
-                    <svg viewBox="0 0 12 12"><rect x="1.5" y="1.5" width="9" height="9" rx="1.5" /></svg>
+                <button
+                    class="wbtn"
+                    title=move || if win_state.get().0 { "Restore" } else { "Maximize" }
+                    on:click=move |_| commands::run(app, Cmd::ToggleMaximize)
+                >
+                    {move || if win_state.get().0 {
+                        view! { <svg viewBox="0 0 12 12"><rect x="1.5" y="3.5" width="7" height="7" rx="1.2" /><path d="M3.5 3.5V2.2c0-.4.3-.7.7-.7h5.6c.4 0 .7.3.7.7v5.6c0 .4-.3.7-.7.7H8.5" /></svg> }.into_any()
+                    } else {
+                        view! { <svg viewBox="0 0 12 12"><rect x="1.5" y="1.5" width="9" height="9" rx="1.5" /></svg> }.into_any()
+                    }}
                 </button>
                 <button class="wbtn x" title="Close" on:click=move |_| commands::run(app, Cmd::Quit)>
                     <svg viewBox="0 0 12 12"><path d="m1.5 1.5 9 9m0-9-9 9" /></svg>
