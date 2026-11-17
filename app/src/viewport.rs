@@ -151,9 +151,12 @@ async fn init_gpu(canvas: web_sys::HtmlCanvasElement) -> Result<(Gpu, String), S
         .find(|f| !f.is_srgb())
         .or_else(|| caps.formats.first().copied())
         .ok_or("the canvas has no formats")?;
-    let alpha_mode = if caps
-        .alpha_modes
-        .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+    // The canvas is see-through so the viewport's CSS background shows.
+    // (wgpu lists only Opaque for WebGPU canvases but accepts PreMultiplied.)
+    let alpha_mode = if !webgl
+        || caps
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
     {
         wgpu::CompositeAlphaMode::PreMultiplied
     } else {
