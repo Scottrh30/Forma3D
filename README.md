@@ -11,7 +11,7 @@ This is original code. It does not use any Blender source, and it uses no Cinema
 | Folder | What it is |
 |---|---|
 | `core/` | **forma3d-core**: the engine. Scene, meshes and their tools, editor state with undo, and the wgpu viewport renderer. No interface code. |
-| `app/` | **forma3d-app**: the interface, written with [Leptos](https://leptos.dev) and compiled to WebAssembly together with the engine. The 3D view draws through WebGL 2 (add `?webgpu` to the address to try WebGPU). |
+| `app/` | **forma3d-app**: the interface, written with [Leptos](https://leptos.dev) and compiled to WebAssembly together with the engine. The 3D view draws through WebGPU when the system offers it and WebGL 2 otherwise (Preferences > Graphics, or `?webgl` / `?webgpu` in the address). |
 | `src-tauri/` | **forma3d**: the [Tauri](https://tauri.app) desktop shell. It opens the window and does what a web page can't: native Open / Save dialogs and file access. |
 | `classic/` | **forma3d-classic**: the original egui interface. It still has everything the new interface hasn't caught up with yet (see below). |
 
@@ -57,8 +57,10 @@ The Tauri app has everything the classic one has; the sections below describe th
 in both). Differences of detail:
 
 - **Workspaces** (tabs at the top right: Model, Track, UV Edit, Animate, Sculpt, Custom) arrange the panels in
-  five tab groups around the viewport. Click a tab's × to close it, right-click a tab to move it to another
-  group, and use Window > Panels to open any panel again. Each workspace remembers its arrangement.
+  five tab groups around the viewport. **Drag a tab** onto another group's tabs to move it there (or along its
+  own group to reorder); while dragging, drop zones along the viewport stand for groups that are empty right now.
+  Click a tab's × to close it, right-click a tab to move it from a menu, and use Window > Panels to open any
+  panel again. Each workspace remembers its arrangement.
 - **Settings** (Preferences, shortcuts from Customize Commands, workspaces) are saved in the app's settings
   folder; autosaves go to an `autosave` folder in the app's data folder. In a plain browser they go to the
   page's local storage.
@@ -66,8 +68,13 @@ in both). Differences of detail:
 - **Four views:** F5, the Panel menu, the view bar or the HUD button; each view's corner button goes back to one.
 - The window's close button, Alt+F4 and the taskbar all ask before quitting with unsaved changes.
 - Right-click (without dragging) in the view for a Create menu, or the Mesh commands in component modes.
-- Not carried over: the customizable icon bar above the classic viewport (the Tauri toolbar is fixed) and the
-  Save Selection to Asset Browser command.
+- **Icon bar** (the row at the top of the viewport): drag icons along it to move them or off it to remove them;
+  the + opens the Icon Library (click a command to add it, or drag it onto the bar). Right-click for Remove, Add
+  Separator, Icon Library, Reset and Hide (Window > Viewport Icon Bar brings it back). Saved as `icon_bar.json`.
+- **My Assets**: Edit > Save Selection to Asset Browser (or the Save Selection button in the Asset Browser) keeps
+  the selected objects with their children and materials; Save Material keeps the selected material. They show
+  under My Assets, click to add, × to delete; saved as `assets.json` in the settings.
+- **Graphics** (Preferences): Automatic uses WebGPU when the system offers it and falls back to WebGL 2.
 
 ## What the engine and classic interface do
 
