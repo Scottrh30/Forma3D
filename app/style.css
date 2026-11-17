@@ -416,3 +416,4 @@ select.sel { height: 26px; border-radius: 6px; background: var(--bg3); border: 1
 .il-cat { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin: 8px 0 4px; }
 .il-grid { display: flex; flex-wrap: wrap; gap: 2px; }
 .il-grid .tb { touch-action: none; }
+.btn.nowrap { white-space: nowrap; flex: none; }

@@ -248,13 +248,12 @@ pub fn Assets() -> impl IntoView {
     };
     view! {
         <div class="bar">
-            <button class="btn" title="Save the selected objects as an asset" on:click=move |_| crate::commands::run(app, crate::commands::Cmd::SaveAsset)>
+            <button class="btn nowrap" title="Save the selected objects as an asset (click a tile to add it)" on:click=move |_| crate::commands::run(app, crate::commands::Cmd::SaveAsset)>
                 "Save Selection"
             </button>
-            <button class="btn" title="Save the selected material as an asset" on:click=move |_| crate::commands::run(app, crate::commands::Cmd::SaveMaterialAsset)>
+            <button class="btn nowrap" title="Save the selected material as an asset" on:click=move |_| crate::commands::run(app, crate::commands::Cmd::SaveMaterialAsset)>
                 "Save Material"
             </button>
-            <span style="color:var(--dim);align-self:center">"Click to add"</span>
             <input class="searchin" placeholder="Search assets" on:keydown=|ev: web_sys::KeyboardEvent| ev.stop_propagation() on:input=move |ev| search.set(event_target_value(&ev)) />
         </div>
         <div class="content">
