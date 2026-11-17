@@ -15,6 +15,59 @@ pub enum Startup {
     Empty,
 }
 
+/// Which graphics API the viewport uses (read when the app starts).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Graphics {
+    /// WebGPU when the system offers it, otherwise WebGL 2.
+    #[default]
+    Auto,
+    WebGpu,
+    WebGl,
+}
+
+impl Graphics {
+    pub fn id(self) -> &'static str {
+        match self {
+            Graphics::Auto => "auto",
+            Graphics::WebGpu => "webgpu",
+            Graphics::WebGl => "webgl",
+        }
+    }
+
+    pub fn from_id(s: &str) -> Graphics {
+        match s {
+            "webgpu" => Graphics::WebGpu,
+            "webgl" => Graphics::WebGl,
+            _ => Graphics::Auto,
+        }
+    }
+
+    /// The choice for this start: `?webgl` / `?webgpu` in the address win,
+    /// then the copy of the preference kept in this browser.
+    pub fn for_startup() -> Graphics {
+        let search = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
+        if search.contains("webgl") {
+            return Graphics::WebGl;
+        }
+        if search.contains("webgpu") {
+            return Graphics::WebGpu;
+        }
+        web_sys::window()
+            .and_then(|w| w.local_storage().ok().flatten())
+            .and_then(|s| s.get_item(STORAGE_KEY).ok().flatten())
+            .map_or(Graphics::Auto, |v| Graphics::from_id(&v))
+    }
+
+    /// Keeps a copy where start-up can read it before the settings load.
+    pub fn remember(self) {
+        if let Some(s) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let _ = s.set_item(STORAGE_KEY, self.id());
+        }
+    }
+}
+
+const STORAGE_KEY: &str = "forma3d.graphics";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
@@ -30,6 +83,8 @@ pub struct Prefs {
     pub autosave_minutes: u32,
     /// Ask before closing or reverting a project with unsaved changes.
     pub confirm_discard: bool,
+    /// The viewport's graphics API (takes effect at the next start).
+    pub graphics: Graphics,
 }
 
 impl Default for Prefs {
@@ -42,6 +97,7 @@ impl Default for Prefs {
             new_grid: true,
             autosave_minutes: 0,
             confirm_discard: true,
+            graphics: Graphics::Auto,
         }
     }
 }
@@ -64,6 +120,7 @@ impl Prefs {
             new_grid: self.new_grid,
             autosave_minutes: self.autosave_minutes.min(120),
             confirm_discard: self.confirm_discard,
+            graphics: self.graphics,
         }
     }
 
@@ -137,6 +194,18 @@ pub fn PrefsDialog() -> impl IntoView {
                             app.customize_open.set(true);
                         }>"Customize Commands..."</button>
                     })}
+                    {row("Graphics", view! {
+                        <select class="sel" on:change=move |ev| {
+                            let g = Graphics::from_id(&event_target_value(&ev));
+                            g.remember();
+                            set(Box::new(move |p| p.graphics = g));
+                        }>
+                            <option value="auto" selected=move || p.with(|p| p.graphics == Graphics::Auto)>"Automatic (WebGPU when available)"</option>
+                            <option value="webgpu" selected=move || p.with(|p| p.graphics == Graphics::WebGpu)>"WebGPU"</option>
+                            <option value="webgl" selected=move || p.with(|p| p.graphics == Graphics::WebGl)>"WebGL 2"</option>
+                        </select>
+                    })}
+                    <p class="hint">{move || format!("Now: {}. A change takes effect the next time Forma3D starts; WebGL 2 is used whenever WebGPU can't start.", app.gpu_name.get())}</p>
                     <h3>"Files"</h3>
                     {row("On Startup", view! {
                         <select class="sel" on:change=move |ev| {

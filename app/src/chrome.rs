@@ -101,6 +101,9 @@ pub fn menu(name: &str) -> Vec<Entry> {
             C(Cmd::Duplicate),
             C(Cmd::Group),
             Sep,
+            C(Cmd::SaveAsset),
+            C(Cmd::SaveMaterialAsset),
+            Sep,
             C(Cmd::Preferences),
             C(Cmd::CustomizeCommands),
         ],
@@ -226,7 +229,7 @@ pub fn menu(name: &str) -> Vec<Entry> {
             v.push(Sub("Workspace", ws));
             v.push(C(Cmd::ResetLayout));
             v.push(Sub("Panels", cmds(Panel::OPENABLE.map(Cmd::ShowPanel))));
-            v.extend([Sep, C(Cmd::ToggleTimeline), Sep, C(Cmd::Minimize), C(Cmd::ToggleMaximize), C(Cmd::ToggleFullscreen), Sep, Widget("projects")]);
+            v.extend([Sep, C(Cmd::ToggleTimeline), C(Cmd::ToggleIconBar), C(Cmd::IconLibrary), Sep, C(Cmd::Minimize), C(Cmd::ToggleMaximize), C(Cmd::ToggleFullscreen), Sep, Widget("projects")]);
             v
         }
         "Help" => vec![

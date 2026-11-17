@@ -2,6 +2,7 @@
 //! browser with WebGPU or WebGL 2). The modelling engine is `forma3d-core`,
 //! compiled into the same WebAssembly module.
 
+mod assets;
 mod attributes;
 mod bottom;
 mod chrome;
@@ -10,6 +11,7 @@ mod components;
 mod customize;
 mod fields;
 mod host;
+mod iconbar;
 mod icons;
 mod interact;
 mod keymap;
@@ -57,7 +59,8 @@ fn handle_key(app: App, ev: &web_sys::KeyboardEvent) -> bool {
         || app.about.get_untracked()
         || app.prefs_open.get_untracked()
         || app.customize_open.get_untracked()
-        || app.render.with_untracked(|r| r.settings_open);
+        || app.render.with_untracked(|r| r.settings_open)
+        || app.icon_library.get_untracked();
     if key.name() == "Esc" && (modal || app.menu.get_untracked().is_some()) {
         app.menu.set(None);
         app.commander.set(false);
@@ -115,6 +118,8 @@ fn Root() -> impl IntoView {
     settings::load_all(app);
     settings::start_autosave(app);
     render::init(app);
+    workspace::install_tab_dragging();
+    iconbar::install(app);
 
     // The window's close button, Alt+F4 and the taskbar ask first when there
     // are unsaved changes.

@@ -150,43 +150,19 @@ pub fn Materials() -> impl IntoView {
 #[component]
 pub fn Assets() -> impl IntoView {
     let app = app();
-    let lib = StoredValue::new_local(builtin());
+    let builtins = StoredValue::new_local(builtin());
     let search = RwSignal::new(String::new());
-    let shown = move || {
-        let q = search.get().to_lowercase();
-        lib.with_value(|l| {
-            l.iter()
-                .enumerate()
-                .filter(|(_, a)| q.is_empty() || a.haystack().contains(&q))
-                .map(|(i, a)| {
-                    let (mat, ic) = match &a.content {
-                        Content::Material(c) => (Some(*c), "material"),
-                        Content::Scene(s) => {
-                            // The icon of the first real part.
-                            let mut ic = "group";
-                            let mut found = false;
-                            s.walk(|o, _| {
-                                if !found
-                                    && !matches!(o.kind, forma3d_core::scene::ObjectKind::Null)
-                                {
-                                    ic = crate::icons::for_kind(&o.kind);
-                                    found = true;
-                                }
-                            });
-                            (None, ic)
-                        }
-                    };
-                    (i, a.name.clone(), mat, ic)
-                })
-                .collect::<Vec<_>>()
-        })
+    // Your own assets first, then the built-in ones; (user index, asset).
+    let all = move || {
+        let mut v: Vec<(Option<usize>, forma3d_core::assets::Asset)> = app
+            .user_assets
+            .with(|u| u.iter().enumerate().filter_map(|(i, s)| s.asset().map(|a| (Some(i), a))).collect());
+        builtins.with_value(|b| v.extend(b.iter().cloned().map(|a| (None, a))));
+        v
     };
-    let insert = move |i: usize| {
-        let content = lib.with_value(|l| l.get(i).map(|a| (a.name.clone(), a.content.clone())));
-        let Some((name, content)) = content else {
-            return;
-        };
-        app.act(|e| match content {
+    let insert = move |a: forma3d_core::assets::Asset| {
+        let name = a.name.clone();
+        app.act(|e| match a.content {
             Content::Scene(s) => {
                 let ids = e.paste(&s);
                 e.status = format!("Added {name} ({} object(s))", ids.len());
@@ -202,31 +178,87 @@ pub fn Assets() -> impl IntoView {
             }
         });
     };
+    let tile_icon = |a: &forma3d_core::assets::Asset| match &a.content {
+        Content::Material(c) => (Some(*c), "material"),
+        Content::Scene(s) => {
+            // The icon of the first real part.
+            let mut ic = "group";
+            let mut found = false;
+            s.walk(|o, _| {
+                if !found && !matches!(o.kind, forma3d_core::scene::ObjectKind::Null) {
+                    ic = crate::icons::for_kind(&o.kind);
+                    found = true;
+                }
+            });
+            (None, ic)
+        }
+    };
+    let tiles = move || {
+        let q = search.get().to_lowercase();
+        let items: Vec<_> = all().into_iter().filter(|(_, a)| q.is_empty() || a.haystack().contains(&q)).collect();
+        let mut out = Vec::new();
+        let mut last_mine = None;
+        for (user, a) in items {
+            let mine = user.is_some();
+            if last_mine != Some(mine) {
+                last_mine = Some(mine);
+                out.push(view! { <div class="asset-head">{if mine { "My Assets" } else { "Built-in" }}</div> }.into_any());
+            }
+            let (mat, ic) = tile_icon(&a);
+            let name = a.name.clone();
+            let tip = format!("Add {name}");
+            let del = user.map(|i| {
+                view! {
+                    <span
+                        class="asset-x"
+                        title="Delete from My Assets"
+                        on:click=move |ev| {
+                            ev.stop_propagation();
+                            let gone = app.user_assets.with_untracked(|u| u.get(i).map(|s| s.name.clone()));
+                            app.user_assets.update(|u| {
+                                if i < u.len() {
+                                    u.remove(i);
+                                }
+                            });
+                            crate::settings::save_assets(app);
+                            if let Some(n) = gone {
+                                app.status(format!("Deleted {n} from My Assets"));
+                            }
+                        }
+                    >
+                        "×"
+                    </span>
+                }
+            });
+            out.push(
+                view! {
+                    <div class="asset" class:mine=mine title=tip on:click=move |_| insert(a.clone())>
+                        {match mat {
+                            Some(c) => view! { <div class="sw" style=ball(c)></div> }.into_any(),
+                            None => crate::icons::icon(ic).into_any(),
+                        }}
+                        <small>{name}</small>
+                        {del}
+                    </div>
+                }
+                .into_any(),
+            );
+        }
+        out
+    };
     view! {
         <div class="bar">
-            <span style="color:var(--dim);align-self:center">"Built-in objects and materials · click to add"</span>
+            <button class="btn" title="Save the selected objects as an asset" on:click=move |_| crate::commands::run(app, crate::commands::Cmd::SaveAsset)>
+                "Save Selection"
+            </button>
+            <button class="btn" title="Save the selected material as an asset" on:click=move |_| crate::commands::run(app, crate::commands::Cmd::SaveMaterialAsset)>
+                "Save Material"
+            </button>
+            <span style="color:var(--dim);align-self:center">"Click to add"</span>
             <input class="searchin" placeholder="Search assets" on:keydown=|ev: web_sys::KeyboardEvent| ev.stop_propagation() on:input=move |ev| search.set(event_target_value(&ev)) />
         </div>
         <div class="content">
-            <div class="assets">
-                {move || {
-                    shown()
-                        .into_iter()
-                        .map(|(i, name, mat, ic)| {
-                            let tip = format!("Add {name}");
-                            view! {
-                                <div class="asset" title=tip on:click=move |_| insert(i)>
-                                    {match mat {
-                                        Some(c) => view! { <div class="sw" style=ball(c)></div> }.into_any(),
-                                        None => crate::icons::icon(ic).into_any(),
-                                    }}
-                                    <small>{name}</small>
-                                </div>
-                            }
-                        })
-                        .collect_view()
-                }}
-            </div>
+            <div class="assets">{tiles}</div>
         </div>
     }
 }

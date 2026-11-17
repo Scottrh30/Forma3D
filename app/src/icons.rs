@@ -227,6 +227,9 @@ pub fn path(name: &str) -> &'static str {
         "uv" => {
             r#"<rect x="4" y="4" width="16" height="16"/><path d="M4 12h16M12 4v16" stroke-dasharray="2 2"/>"#
         }
+        "plus" => r#"<path d="M12 5v14M5 12h14"/>"#,
+        "minus" => r#"<path d="M12 4v16"/>"#,
+        "shelf" => r#"<rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 12h.01M11 12h.01M15 12h.01"/>"#,
         "minimize" => r#"<path d="M5 12h14"/>"#,
         "maximize" => r#"<rect x="4" y="4" width="16" height="16" rx="2"/>"#,
         "fullscreen" => r#"<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>"#,

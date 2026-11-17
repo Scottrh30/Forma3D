@@ -73,6 +73,16 @@ pub struct App {
     /// typed so far (a second key makes a sequence).
     pub capture: RwSignal<Option<(Cmd, Option<Shortcut>)>>,
     pub capture_msg: RwSignal<String>,
+    /// A panel tab being dragged to another group.
+    pub tab_drag: RwSignal<Option<crate::workspace::TabDrag>>,
+    /// Objects and materials you saved to the Asset Browser.
+    pub user_assets: RwSignal<Vec<crate::assets::Saved>>,
+    /// The icon bar above the viewport, an icon being dragged, its
+    /// right-click menu (icon index, x, y) and the Icon Library.
+    pub icon_bar: RwSignal<crate::iconbar::IconBar>,
+    pub bar_drag: RwSignal<Option<crate::iconbar::BarDrag>>,
+    pub bar_menu: RwSignal<Option<(Option<usize>, i32, i32)>>,
+    pub icon_library: RwSignal<bool>,
     /// Renders: the Picture Viewer's pictures, the queue, the view's render.
     pub render: RwSignal<crate::render::RenderUi, LocalStorage>,
 }
@@ -108,6 +118,12 @@ impl App {
             loaded: RwSignal::new(false),
             capture: RwSignal::new(None),
             capture_msg: RwSignal::new(String::new()),
+            tab_drag: RwSignal::new(None),
+            user_assets: RwSignal::new(Vec::new()),
+            icon_bar: RwSignal::new(Default::default()),
+            bar_drag: RwSignal::new(None),
+            bar_menu: RwSignal::new(None),
+            icon_library: RwSignal::new(false),
             render: RwSignal::new_local(Default::default()),
         }
     }

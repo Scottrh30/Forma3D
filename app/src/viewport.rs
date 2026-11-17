@@ -1,5 +1,6 @@
-//! The 3D view: the engine's wgpu renderer drawing into a canvas (WebGL 2 by
-//! default, WebGPU with `?webgpu`), one view or four, camera navigation, and
+//! The 3D view: the engine's wgpu renderer drawing into a canvas (WebGPU when
+//! the system offers it, otherwise WebGL 2; Preferences > Graphics, or
+//! `?webgl` / `?webgpu`), one view or four, camera navigation, and
 //! the tools (gizmo, components, pens) with their SVG overlay.
 
 use crate::chrome::{Entry, MenuButton, MenuEntries};
@@ -54,22 +55,54 @@ fn make_depth(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
         .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+/// Opens WebGPU without a canvas: adapter and device, or why not.
+async fn open_webgpu() -> Result<(wgpu::Instance, Option<wgpu::Adapter>, (wgpu::Device, wgpu::Queue)), String> {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = wgpu::Backends::BROWSER_WEBGPU;
+    let instance = wgpu::util::new_instance_with_webgpu_detection(desc).await;
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        })
+        .await
+        .map_err(|e| format!("no adapter: {e}"))?;
+    if adapter.get_info().backend != wgpu::Backend::BrowserWebGpu {
+        return Err("no WebGPU adapter".into());
+    }
+    let dq = adapter
+        .request_device(&wgpu::DeviceDescriptor { label: Some("forma3d"), required_limits: adapter.limits(), ..Default::default() })
+        .await
+        .map_err(|e| format!("no device: {e}"))?;
+    Ok((instance, Some(adapter), dq))
+}
+
 // Natively (only for `cargo check`) the canvas surface can't exist.
 #[cfg_attr(not(target_arch = "wasm32"), allow(unreachable_code, unused_variables))]
 async fn init_gpu(canvas: web_sys::HtmlCanvasElement) -> Result<(Gpu, String), String> {
-    let want_webgpu = web_sys::window()
-        .and_then(|w| w.location().search().ok())
-        .is_some_and(|q| q.contains("webgpu"));
-    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-    desc.backends = if want_webgpu {
-        wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL
-    } else {
-        wgpu::Backends::GL
-    };
-    let instance = if want_webgpu {
-        wgpu::util::new_instance_with_webgpu_detection(desc).await
-    } else {
-        wgpu::Instance::new(desc)
+    let choice = crate::prefs::Graphics::for_startup();
+    let has_webgpu = web_sys::window()
+        .and_then(|w| js_sys::Reflect::get(&w.navigator(), &"gpu".into()).ok())
+        .is_some_and(|g| !g.is_undefined() && !g.is_null());
+    // WebGPU is tried first (unless WebGL is chosen) without touching the
+    // canvas: a canvas that once had a WebGPU context can't switch to WebGL.
+    let mut picked = None;
+    if choice != crate::prefs::Graphics::WebGl && has_webgpu {
+        match open_webgpu().await {
+            Ok(x) => picked = Some(x),
+            Err(e) => web_sys::console::warn_1(&format!("WebGPU could not start ({e}); using WebGL 2").into()),
+        }
+    }
+    let (instance, adapter, webgpu_device) = match picked {
+        Some((i, a, d)) => (i, a, Some(d)),
+        None => {
+            let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+            desc.backends = wgpu::Backends::GL;
+            let instance = wgpu::Instance::new(desc);
+            (instance, None, None)
+        }
     };
     #[cfg(target_arch = "wasm32")]
     let surface = instance
@@ -80,15 +113,18 @@ async fn init_gpu(canvas: web_sys::HtmlCanvasElement) -> Result<(Gpu, String), S
         let _ = &canvas;
         return Err("the viewport only runs in the app's window".to_owned());
     };
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-            apply_limit_buckets: false,
-        })
-        .await
-        .map_err(|e| format!("no graphics adapter: {e}"))?;
+    let adapter = match adapter {
+        Some(a) => a,
+        None => instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+                apply_limit_buckets: false,
+            })
+            .await
+            .map_err(|e| format!("no graphics adapter: {e}"))?,
+    };
     let info = adapter.get_info();
     let webgl = info.backend == wgpu::Backend::Gl;
     let limits = if webgl {
@@ -96,14 +132,17 @@ async fn init_gpu(canvas: web_sys::HtmlCanvasElement) -> Result<(Gpu, String), S
     } else {
         adapter.limits()
     };
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: Some("forma3d"),
-            required_limits: limits,
-            ..Default::default()
-        })
-        .await
-        .map_err(|e| format!("could not open the graphics device: {e}"))?;
+    let (device, queue) = match webgpu_device {
+        Some(dq) => dq,
+        None => adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("forma3d"),
+                required_limits: limits,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| format!("could not open the graphics device: {e}"))?,
+    };
     let caps = surface.get_capabilities(&adapter);
     let format = caps
         .formats
@@ -1030,26 +1069,7 @@ pub fn Viewport() -> impl IntoView {
 
     view! {
         <div class="panel viewport">
-            <div class="vbar">
-                <div class="group">
-                    {ViewKind::ALL.map(|k| view! { <crate::chrome::CmdButton cmd=Cmd::Camera(k) /> }).collect_view()}
-                    <crate::chrome::CmdButton cmd=Cmd::FourViews />
-                </div>
-                <div class="group">
-                    <crate::chrome::CmdButton cmd=Cmd::FrameAll />
-                    <crate::chrome::CmdButton cmd=Cmd::FrameSelected />
-                </div>
-                <div class="group">
-                    {forma3d_core::renderer::DisplayMode::ALL.map(|m| view! { <crate::chrome::CmdButton cmd=Cmd::Display(m) /> }).collect_view()}
-                </div>
-                <div class="group">
-                    <crate::chrome::CmdButton cmd=Cmd::ToggleGrid />
-                    <crate::chrome::CmdButton cmd=Cmd::ToggleSolo />
-                </div>
-                <div class="group">
-                    {forma3d_core::renderer::ViewFx::ALL.map(|fx| view! { <crate::chrome::CmdButton cmd=Cmd::ViewFx(fx) /> }).collect_view()}
-                </div>
-            </div>
+            <crate::iconbar::IconBarView />
             <div class="vmenus">
                 <MenuButton name="v-View" label="View" />
                 <MenuButton name="v-Cameras" label="Cameras" />

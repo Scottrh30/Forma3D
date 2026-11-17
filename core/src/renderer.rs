@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// The depth format of the pass `ViewDraw::paint` draws into.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-const MAX_GRID_VERTICES: usize = 4096;
+const MAX_GRID_VERTICES: usize = 16_384;
 const INITIAL_INSTANCES: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -468,7 +468,19 @@ pub fn build_grid(cam: &Camera) -> Grid {
         p
     };
 
+    // Each line is drawn as short pieces: some GL drivers mishandle a long
+    // line that runs behind the camera and drop or break it.
+    const PIECES: usize = 24;
     let mut out = Vec::new();
+    let mut line = |p0: [f32; 3], p1: [f32; 3], color: [f32; 4]| {
+        let (p0, p1) = (Vec3::from(p0), Vec3::from(p1));
+        for i in 0..PIECES {
+            let t0 = i as f32 / PIECES as f32;
+            let t1 = (i + 1) as f32 / PIECES as f32;
+            out.push(GridVertex { pos: p0.lerp(p1, t0).to_array(), color });
+            out.push(GridVertex { pos: p0.lerp(p1, t1).to_array(), color });
+        }
+    };
     let k_a = (center_a / unit).round() as i64;
     let k_b = (center_b / unit).round() as i64;
     // Lines of constant `a` (they run along the b axis).
@@ -476,16 +488,14 @@ pub fn build_grid(cam: &Camera) -> Grid {
         let k = k_a + i as i64;
         let a = k as f32 * unit;
         let color = if k == 0 { axis_color(b_idx) } else { line_color(k) };
-        out.push(GridVertex { pos: point(a, center_b - extent), color });
-        out.push(GridVertex { pos: point(a, center_b + extent), color });
+        line(point(a, center_b - extent), point(a, center_b + extent), color);
     }
     // Lines of constant `b` (they run along the a axis).
     for i in -HALF_LINES..=HALF_LINES {
         let k = k_b + i as i64;
         let b = k as f32 * unit;
         let color = if k == 0 { axis_color(a_idx) } else { line_color(k) };
-        out.push(GridVertex { pos: point(center_a - extent, b), color });
-        out.push(GridVertex { pos: point(center_a + extent, b), color });
+        line(point(center_a - extent, b), point(center_a + extent, b), color);
     }
 
     let mut center = Vec3::ZERO;
@@ -1470,8 +1480,10 @@ mod tests {
         let spacing = |cam: &Camera| {
             let g = build_grid(cam);
             let v = &g.vertices;
-            // Distance between the first two parallel lines (vertices 0 and 2).
-            let measured = (v[2].pos[0] - v[0].pos[0]).abs().max((v[2].pos[2] - v[0].pos[2]).abs());
+            // Distance between the first two parallel lines (each line is
+            // 24 pieces of two vertices).
+            let next = 24 * 2;
+            let measured = (v[next].pos[0] - v[0].pos[0]).abs().max((v[next].pos[2] - v[0].pos[2]).abs());
             assert!((measured - g.unit).abs() < 1e-3, "reported unit must match the geometry");
             measured
         };

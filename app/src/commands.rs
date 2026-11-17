@@ -173,6 +173,8 @@ pub enum Cmd {
     EditorCamera,
     UseRenderCamera,
     FocusOnSelection,
+    SaveAsset,
+    SaveMaterialAsset,
     // Render
     RenderView,
     RenderToViewer,
@@ -194,6 +196,8 @@ pub enum Cmd {
     ResetLayout,
     ShowPanel(Panel),
     ToggleTimeline,
+    ToggleIconBar,
+    IconLibrary,
     Minimize,
     ToggleMaximize,
     ToggleFullscreen,
@@ -445,6 +449,8 @@ pub fn all() -> Vec<Info> {
     add(Cmd::EditorCamera, "cameras.editor", "Editor Camera", "Cameras", "camera", "stop looking through default view");
     add(Cmd::UseRenderCamera, "cameras.render_camera", "Use as Render Camera", "Cameras", "camera", "render camera active final");
     add(Cmd::FocusOnSelection, "cameras.focus", "Focus on Selection", "Cameras", "camera", "depth of field focus distance dof pick");
+    add(Cmd::SaveAsset, "asset.save_selection", "Save Selection to Asset Browser", "Asset", "assets", "asset library preset save my assets");
+    add(Cmd::SaveMaterialAsset, "asset.save_material", "Save Material to Asset Browser", "Asset", "material", "asset library material save my assets");
     add(Cmd::RenderView, "render.view", "Render View", "Render", "render", "render active view preview");
     add(Cmd::RenderToViewer, "render.picture_viewer", "Render to Picture Viewer", "Render", "render", "render final picture image save frames");
     add(Cmd::RenderRegion, "render.region", "Interactive Render Region", "Render", "render", "ipr interactive region live preview");
@@ -1033,6 +1039,8 @@ pub fn all() -> Vec<Info> {
         "timeline",
         "animation",
     );
+    add(Cmd::ToggleIconBar, "window.icon_bar", "Viewport Icon Bar", "Window", "shelf", "toolbar shelf buttons icons");
+    add(Cmd::IconLibrary, "window.icon_library", "Icon Library (customize icon bar)...", "Window", "shelf", "toolbar shelf buttons customize drag");
     add(Cmd::Minimize, "window.minimize", "Minimize", "Window", "minimize", "hide window taskbar");
     add(Cmd::ToggleMaximize, "window.maximize", "Maximize / Restore", "Window", "maximize", "window size restore zoom");
     add(Cmd::ToggleFullscreen, "window.fullscreen", "Full Screen", "Window", "fullscreen", "full screen kiosk hide taskbar f11");
@@ -1319,6 +1327,8 @@ pub fn state_of(
         Cmd::LookThrough => (true, Some(ed.look_through.is_some())),
         Cmd::UseRenderCamera => (ed.active().is_some_and(|id| matches!(ed.scene.get(id).map(|o| &o.kind), Some(ObjectKind::Camera(_)))), None),
         Cmd::StopRender => (crate::render::busy(), None),
+        Cmd::SaveAsset => (has_sel, None),
+        Cmd::SaveMaterialAsset => (ed.selected_material.is_some(), None),
         Cmd::RenderRegion => (true, Some(crate::render::region_on())),
         _ => (true, None),
     }
@@ -1329,6 +1339,9 @@ pub fn state(c: Cmd, ed: &Editor, app: &App) -> (bool, Option<bool>) {
     let ws = app.workspace.get();
     let clip = app.clipboard.with_value(|c| c.is_some());
     let tl = app.timeline_shown();
+    if c == Cmd::ToggleIconBar {
+        return (true, Some(app.icon_bar.with(|b| b.shown)));
+    }
     state_of(ed, c, ws, clip, tl)
 }
 
@@ -1353,6 +1366,8 @@ pub enum AppAction {
     ResetLayout,
     ShowPanel(Panel),
     ToggleTimeline,
+    ToggleIconBar,
+    IconLibrary,
     Minimize,
     ToggleMaximize,
     ToggleFullscreen,
@@ -1360,6 +1375,8 @@ pub enum AppAction {
     CustomizeCommands,
     About,
     Render(crate::render::Target),
+    SaveAsset,
+    SaveMaterialAsset,
     RenderRegion,
     StopRender,
     RenderSettings,
@@ -1389,6 +1406,8 @@ pub fn execute(ed: &mut Editor, cmd: Cmd) -> Option<AppAction> {
         Cmd::ShowPanel(p) => return Some(AppAction::ShowPanel(p)),
         Cmd::ResetLayout => return Some(AppAction::ResetLayout),
         Cmd::ToggleTimeline => return Some(AppAction::ToggleTimeline),
+        Cmd::ToggleIconBar => return Some(AppAction::ToggleIconBar),
+        Cmd::IconLibrary => return Some(AppAction::IconLibrary),
         Cmd::Minimize => return Some(AppAction::Minimize),
         Cmd::ToggleMaximize => return Some(AppAction::ToggleMaximize),
         Cmd::ToggleFullscreen => return Some(AppAction::ToggleFullscreen),
@@ -1634,6 +1653,8 @@ pub fn execute(ed: &mut Editor, cmd: Cmd) -> Option<AppAction> {
                 _ => ed.status = "Focus on Selection: look through or render with a camera, and select what should be sharp".to_owned(),
             }
         }
+        Cmd::SaveAsset => return Some(AppAction::SaveAsset),
+        Cmd::SaveMaterialAsset => return Some(AppAction::SaveMaterialAsset),
         Cmd::RenderView => return Some(AppAction::Render(crate::render::Target::View)),
         Cmd::RenderToViewer => return Some(AppAction::Render(crate::render::Target::Viewer)),
         Cmd::RenderRegion => return Some(AppAction::RenderRegion),
@@ -1846,6 +1867,11 @@ fn exec(app: App, c: Cmd, confirmed: bool) {
         AppAction::ResetLayout => app.reset_workspace(),
         AppAction::ShowPanel(p) => app.show_panel(p),
         AppAction::ToggleTimeline => app.toggle_timeline(),
+        AppAction::ToggleIconBar => crate::iconbar::edit(app, |b| b.shown = !b.shown),
+        AppAction::IconLibrary => {
+            crate::iconbar::edit(app, |b| b.shown = true);
+            app.icon_library.set(true);
+        }
         AppAction::Minimize => crate::host::window_call("minimize"),
         AppAction::ToggleMaximize => crate::host::window_call("toggleMaximize"),
         AppAction::ToggleFullscreen => leptos::task::spawn_local(crate::host::toggle_fullscreen()),
@@ -1853,6 +1879,8 @@ fn exec(app: App, c: Cmd, confirmed: bool) {
         AppAction::CustomizeCommands => app.customize_open.set(true),
         AppAction::About => app.about.set(true),
         AppAction::Render(t) => crate::render::start(app, t),
+        AppAction::SaveAsset => save_selection_asset(app),
+        AppAction::SaveMaterialAsset => save_material_asset(app),
         AppAction::RenderRegion => crate::render::toggle_region(app),
         AppAction::StopRender => crate::render::stop(app),
         AppAction::RenderSettings => crate::render::open_settings(app),
@@ -2040,4 +2068,44 @@ mod tests {
         execute(&mut ed, Cmd::Cancel);
         assert!(ed.comp.polys.is_empty());
     }
+}
+
+/// Saves the selected objects (with their children and materials) to the
+/// Asset Browser, under My Assets.
+pub fn save_selection_asset(app: App) {
+    let picked = app.peek(|e| {
+        if e.selection.is_empty() {
+            return None;
+        }
+        let base = e.active().and_then(|id| e.scene.get(id)).map(|o| o.name.clone()).unwrap_or_else(|| "Asset".to_owned());
+        Some((base, e.scene.extract(&e.selection)))
+    });
+    let Some((base, scene)) = picked else {
+        app.status("Select the objects to save first");
+        return;
+    };
+    let name = app.user_assets.with_untracked(|a| crate::assets::unique_name(&base, a));
+    match crate::assets::Saved::objects(&name, &scene) {
+        Ok(s) => {
+            app.user_assets.update(|a| a.push(s));
+            crate::settings::save_assets(app);
+            app.show_panel(crate::workspace::Panel::Assets);
+            app.status(format!("Saved \"{name}\" to the Asset Browser (My Assets)"));
+        }
+        Err(e) => app.error(format!("Could not save the asset: {e}")),
+    }
+}
+
+/// Saves the selected material's colour to the Asset Browser.
+pub fn save_material_asset(app: App) {
+    let picked = app.peek(|e| e.selected_material.and_then(|m| e.scene.material(m)).map(|m| (m.name.clone(), m.color)));
+    let Some((base, color)) = picked else {
+        app.status("Select a material first");
+        return;
+    };
+    let name = app.user_assets.with_untracked(|a| crate::assets::unique_name(&base, a));
+    app.user_assets.update(|a| a.push(crate::assets::Saved::material(&name, color)));
+    crate::settings::save_assets(app);
+    app.show_panel(crate::workspace::Panel::Assets);
+    app.status(format!("Saved material \"{name}\" to the Asset Browser"));
 }

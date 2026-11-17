@@ -30,6 +30,11 @@ fn write(app: App, name: &'static str, text: String) {
     });
 }
 
+/// Writes any settings file (once settings have been read).
+pub fn write_named(app: App, name: &'static str, text: String) {
+    write(app, name, text);
+}
+
 pub fn save_prefs(app: App) {
     let text = serde_json::to_string_pretty(&app.prefs.get_untracked()).unwrap_or_default();
     write(app, PREFS, text);
@@ -40,6 +45,11 @@ pub fn save_keymap(app: App) {
         .keymap
         .with_untracked(|k| k.to_json(crate::commands::infos()));
     write(app, KEYMAP, text);
+}
+
+pub fn save_assets(app: App) {
+    let text = app.user_assets.with_untracked(|a| serde_json::to_string(a).unwrap_or_default());
+    write(app, crate::assets::FILE, text);
 }
 
 pub fn save_workspaces(app: App) {
@@ -54,6 +64,7 @@ pub fn load_all(app: App) {
             && let Ok(p) = serde_json::from_str::<crate::prefs::Prefs>(&text)
         {
             let p = p.sanitized();
+            p.graphics.remember();
             app.each_project(|e| p.apply_to(e));
             if p.startup == crate::prefs::Startup::Empty && app.peek(|e| e.is_pristine()) {
                 let mut ed = forma3d_core::editor::Editor::new(forma3d_core::scene::Scene::new());
@@ -73,6 +84,15 @@ pub fn load_all(app: App) {
             && let Ok(saved) = serde_json::from_str::<crate::workspace::Saved>(&text)
         {
             app.load_workspaces(saved);
+        }
+        if let Some(text) = host::read_setting(crate::iconbar::FILE).await {
+            app.icon_bar.set(crate::iconbar::IconBar::from_json(&text));
+        }
+        if let Some(text) = host::read_setting(crate::assets::FILE).await {
+            match serde_json::from_str::<Vec<crate::assets::Saved>>(&text) {
+                Ok(a) => app.user_assets.set(a),
+                Err(e) => app.error(format!("Could not read your saved assets: {e}")),
+            }
         }
         app.loaded.set(true);
         app.view_rev.update(|r| *r += 1);

@@ -193,8 +193,60 @@ await page.mouse.up({ button: 'right' });
 await shot('24-look-through');
 await commander('editor camera');
 
+// Dragging a tab to dock it: Takes onto the bottom-left group, then a
+// panel onto the empty side zone along the viewport.
+{
+  const t = page.locator('.tab', { hasText: 'Takes' }).first();
+  const target = page.locator('.bottom .panel .tabs').first();
+  if (await t.count() && await target.count()) {
+    const a = await t.boundingBox(), b = await target.boundingBox();
+    await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(b.x + b.width - 20, b.y + b.height / 2, { steps: 12 });
+    await shot('25-dock-drag');
+    await page.mouse.up();
+    await wait(300);
+  } else { log.push('(no Takes tab to drag)'); }
+  const l = page.locator('.tab', { hasText: 'Layers' }).first();
+  const st = await page.$('.center .stage');
+  if (await l.count() && st) {
+    const a = await l.boundingBox(), s2 = await st.boundingBox();
+    await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(s2.x + 60, s2.y + s2.height / 2, { steps: 12 });
+    await shot('26-dock-zones');
+    await page.mouse.up();
+    await wait(400);
+    await shot('27-docked-side');
+  }
+}
+
+// The icon bar: open the Icon Library and drag an icon onto the bar.
+await page.locator('.ib-add').first().click();
+await wait(300);
+{
+  const icon = page.locator('.iconlib .il-grid .tb').nth(5);
+  const bar = page.locator('.iconbar').first();
+  if (await icon.count() && await bar.count()) {
+    const a = await icon.boundingBox(), b = await bar.boundingBox();
+    await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(b.x + 120, b.y + b.height / 2, { steps: 10 });
+    await shot('28-iconbar-drag');
+    await page.mouse.up();
+  }
+}
+await wait(300);
+await page.keyboard.press('Escape');
+
+// Save Selection to Asset Browser.
+await commander('select all');
+await commander('save selection to asset browser');
+await tab('Asset Browser');
+await shot('29-my-assets');
+
 await tab('Console');
-await shot('25-console');
+await shot('30-console');
 
 fs.writeFileSync(`${out}/console.txt`, log.join('\n'));
 await browser.close();

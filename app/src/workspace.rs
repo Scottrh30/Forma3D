@@ -1,8 +1,8 @@
 //! Workspaces: each arranges the panels for one kind of job (the tabs at the
 //! top right). Panels sit in five tab groups around the viewport; every
 //! workspace remembers how you rearrange it (closing a tab, moving a tab to
-//! another group, opening one from Window > Panels), saved as
-//! `workspaces.json`.
+//! another group by dragging it or from its right-click menu, opening one
+//! from Window > Panels), saved as `workspaces.json`.
 
 use crate::icons::icon_s;
 use crate::state::app;
@@ -326,6 +326,26 @@ impl Layout {
         grp.active = grp.panels.len() - 1;
     }
 
+    /// Moves a panel into group `to` at tab position `at` (the end when
+    /// None); within its own group this reorders the tabs.
+    pub fn move_to_at(&mut self, p: Panel, to: usize, at: Option<usize>) {
+        if to >= self.groups.len() {
+            return;
+        }
+        let from = self.find(p);
+        let mut at = at.unwrap_or(usize::MAX);
+        if let Some((g, i)) = from {
+            if g == to && i < at && at != usize::MAX {
+                at -= 1;
+            }
+        }
+        self.close(p);
+        let grp = &mut self.groups[to];
+        let at = at.min(grp.panels.len());
+        grp.panels.insert(at, p);
+        grp.active = at;
+    }
+
     pub fn move_to(&mut self, p: Panel, to: usize) {
         if self.find(p).is_some_and(|(g, _)| g == to) || to >= self.groups.len() {
             return;
@@ -353,15 +373,130 @@ pub struct Saved {
     pub layouts: HashMap<Workspace, Layout>,
 }
 
-/// One tab group with its tabs. Right-click a tab to move it to another
-/// group; × closes it (Window > Panels opens it again).
+/// A tab on the move: where the pointer went down and is now, and where it
+/// would land.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabDrag {
+    pub panel: Panel,
+    pub start: (i32, i32),
+    pub at: (i32, i32),
+    /// Past the few pixels that tell a drag from a click.
+    pub moving: bool,
+    /// (group, tab position) under the pointer.
+    pub target: Option<(usize, Option<usize>)>,
+}
+
+/// Where a point lands: the group (`data-dock`) and the tab (`data-tab`)
+/// under it.
+fn dock_target(x: i32, y: i32) -> Option<(usize, Option<usize>)> {
+    let doc = web_sys::window()?.document()?;
+    let el = doc.element_from_point(x as f32, y as f32)?;
+    let dock = el.closest("[data-dock]").ok()??;
+    let group = dock.get_attribute("data-dock")?.parse().ok()?;
+    let tab = el.closest("[data-tab]").ok().flatten().and_then(|t| {
+        let i: usize = t.get_attribute("data-tab")?.parse().ok()?;
+        // Past the middle of a tab inserts after it.
+        let r = t.get_bounding_client_rect();
+        Some(if (x as f64) > r.left() + r.width() / 2.0 { i + 1 } else { i })
+    });
+    // The tab strip's empty end appends.
+    Some((group, tab))
+}
+
+/// Follows tab drags: moves the ghost, finds the target and docks on release.
+pub fn install_tab_dragging() {
+    let app = app();
+    let _ = window_event_listener(leptos::ev::pointermove, move |ev| {
+        let Some(mut d) = app.tab_drag.get_untracked() else { return };
+        let (x, y) = (ev.client_x(), ev.client_y());
+        d.at = (x, y);
+        if !d.moving && ((x - d.start.0).pow(2) + (y - d.start.1).pow(2)) > 36 {
+            d.moving = true;
+        }
+        if d.moving {
+            d.target = dock_target(x, y);
+        }
+        app.tab_drag.set(Some(d));
+    });
+    let _ = window_event_listener(leptos::ev::pointerup, move |ev| {
+        let Some(d) = app.tab_drag.get_untracked() else { return };
+        app.tab_drag.set(None);
+        if !d.moving {
+            return;
+        }
+        if let Some((g, at)) = dock_target(ev.client_x(), ev.client_y()) {
+            app.edit_layout(|l| l.move_to_at(d.panel, g, at));
+            app.status(format!("Moved {} to {}", d.panel.title(), SLOT_NAMES[g]));
+        }
+    });
+    let _ = window_event_listener(leptos::ev::keydown, move |ev| {
+        if ev.key() == "Escape" && app.tab_drag.get_untracked().is_some() {
+            app.tab_drag.set(None);
+        }
+    });
+}
+
+/// While a tab is dragged: the tab under the pointer, and drop zones for
+/// the groups that are empty (hidden) right now.
+#[component]
+pub fn DockOverlay() -> impl IntoView {
+    let app = app();
+    let zones = move || {
+        let d = app.tab_drag.get().filter(|d| d.moving)?;
+        let doc = web_sys::window()?.document()?;
+        let stage = doc.query_selector(".center .stage").ok()??.get_bounding_client_rect();
+        let (l, t, w, h) = (stage.left(), stage.top(), stage.width(), stage.height());
+        let empty: Vec<usize> = app.layout.with(|lay| (0..5).filter(|g| lay.groups[*g].panels.is_empty()).collect());
+        // Strips along the viewport's edges, where each group would appear.
+        let sw = (w * 0.22).clamp(120.0, 260.0);
+        let bh = (h * 0.24).clamp(80.0, 200.0);
+        let rect = |g: usize| match g {
+            0 => (l + w - sw, t, sw, h / 2.0 - 3.0),
+            1 => (l + w - sw, t + h / 2.0 + 3.0, sw, h / 2.0 - 3.0),
+            2 => (l + sw + 6.0, t + h - bh, (w - 2.0 * sw) / 2.0 - 9.0, bh),
+            3 => (l + w / 2.0 + 3.0, t + h - bh, (w - 2.0 * sw) / 2.0 - 9.0, bh),
+            _ => (l, t, sw, h),
+        };
+        let hot = d.target.map(|t| t.0);
+        let boxes = empty
+            .into_iter()
+            .map(|g| {
+                let (x, y, bw, bh) = rect(g);
+                view! {
+                    <div
+                        class="dockzone"
+                        class:hot=hot == Some(g)
+                        data-dock=g.to_string()
+                        style=format!("left:{x}px;top:{y}px;width:{bw}px;height:{bh}px")
+                    >
+                        <span>{SLOT_NAMES[g]}</span>
+                    </div>
+                }
+            })
+            .collect_view();
+        let ghost = view! {
+            <div class="tabghost" style=format!("left:{}px;top:{}px", d.at.0 + 12, d.at.1 + 8)>
+                {icon_s(d.panel.icon())}
+                {d.panel.title()}
+            </div>
+        };
+        Some(view! { {boxes} {ghost} })
+    };
+    view! { {zones} }
+}
+
+/// One tab group with its tabs. Drag a tab to another group (or onto a drop
+/// zone along the viewport) to move it, or right-click it; × closes it
+/// (Window > Panels opens it again).
 #[component]
 pub fn TabGroup(group: usize, #[prop(optional)] extra: &'static str) -> impl IntoView {
     let app = app();
     let current = move || app.layout.with(|l| l.groups[group].clone());
     let menu_for = RwSignal::new(None::<(Panel, i32, i32)>);
+    let hot = move || app.tab_drag.with(|d| d.as_ref().filter(|d| d.moving).and_then(|d| d.target).is_some_and(|t| t.0 == group));
+    let insert_at = move || app.tab_drag.with(|d| d.as_ref().filter(|d| d.moving).and_then(|d| d.target).filter(|t| t.0 == group).map(|t| t.1));
     view! {
-        <div class=format!("panel {extra}")>
+        <div class=format!("panel {extra}") class:dock-hot=hot data-dock=group.to_string()>
             <div class="tabs">
                 {move || {
                     let g = current();
@@ -370,11 +505,23 @@ pub fn TabGroup(group: usize, #[prop(optional)] extra: &'static str) -> impl Int
                         .iter()
                         .enumerate()
                         .map(|(i, &p)| {
+                            let before = move || insert_at() == Some(Some(i));
+                            let after = move || i + 1 == current().panels.len() && matches!(insert_at(), Some(Some(n)) if n > i) ;
                             view! {
                                 <div
                                     class="tab"
                                     class:on=Some(p) == cur
-                                    title="Click to show · right-click to move · × to close"
+                                    class:ins-before=before
+                                    class:ins-after=after
+                                    class:dragging=move || app.tab_drag.with(|d| d.as_ref().is_some_and(|d| d.moving && d.panel == p))
+                                    data-tab=i.to_string()
+                                    title="Click to show · drag to move or dock · right-click for more · × to close"
+                                    on:pointerdown=move |ev: web_sys::PointerEvent| {
+                                        if ev.button() == 0 {
+                                            let at = (ev.client_x(), ev.client_y());
+                                            app.tab_drag.set(Some(TabDrag { panel: p, start: at, at, moving: false, target: None }));
+                                        }
+                                    }
                                     on:click=move |_| app.edit_layout(|l| l.groups[group].active = i)
                                     on:contextmenu=move |ev: web_sys::MouseEvent| {
                                         ev.prevent_default();
@@ -505,6 +652,7 @@ pub fn Body() -> impl IntoView {
     };
     view! {
         <div class="body">
+            <DockOverlay />
             <crate::chrome::Palette />
             <Show when=move || has(4)>
                 <div class=side_class><TabGroup group=4 extra="fill" /></div>
@@ -568,6 +716,15 @@ mod tests {
         );
         l.move_to(Panel::Layers, 2);
         assert_eq!(l.find(Panel::Layers).map(|x| x.0), Some(2));
+        // Dragging: into a position, and reordering within a group.
+        l.move_to_at(Panel::Takes, 2, Some(0));
+        assert_eq!(l.find(Panel::Takes), Some((2, 0)));
+        let n = l.groups[2].panels.len();
+        l.move_to_at(Panel::Takes, 2, Some(n));
+        assert_eq!(l.find(Panel::Takes), Some((2, n - 1)));
+        assert_eq!(l.groups[2].active, n - 1);
+        l.move_to_at(Panel::Takes, 4, None);
+        assert_eq!(l.find(Panel::Takes), Some((4, l.groups[4].panels.len() - 1)));
         l.close(Panel::Layers);
         assert!(l.find(Panel::Layers).is_none());
         let saved = Saved {
