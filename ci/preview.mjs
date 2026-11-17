@@ -6,12 +6,15 @@ import fs from 'fs';
 
 const url = process.argv[2] || 'http://localhost:8080/';
 const out = process.argv[3] || 'preview';
-const webgpu = process.argv[4] === 'webgpu';
+// The full run uses the default graphics (WebGPU); `webgl` is a short run
+// that forces WebGL 2 to check the fallback and its grid.
+const webgl = process.argv[4] === 'webgl';
 fs.mkdirSync(out, { recursive: true });
 const log = [];
-const args = webgpu
-  ? ['--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist']
-  : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-webgl', '--disable-features=WebGPU'];
+// (--use-vulkan=swiftshader lets screenshots capture the WebGPU canvas.)
+const args = webgl
+  ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-webgl', '--disable-features=WebGPU']
+  : ['--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU', '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
 const browser = await chromium.launch({ args });
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });
 page.on('console', m => log.push(`[${m.type()}] ${m.text()}`));
@@ -35,10 +38,16 @@ const menu = async name => {
   await wait(400);
 };
 
-await page.goto(webgpu ? url + '?webgpu' : url);
+await page.goto(webgl ? url + '?webgl' : url);
 await wait(6000);
 await shot('01-start');
-if (webgpu) { await browser.close(); fs.writeFileSync(`${out}/console.txt`, log.join('\n')); process.exit(0); }
+if (webgl) {
+  await commander('4 views');
+  await shot('02-four-views');
+  await browser.close();
+  fs.writeFileSync(`${out}/console.txt`, log.join('\n'));
+  process.exit(0);
+}
 
 const stage = await page.$('.stage .hit');
 const box = await stage.boundingBox();

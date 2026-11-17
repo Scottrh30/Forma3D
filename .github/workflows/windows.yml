@@ -87,8 +87,8 @@ jobs:
           (cd app/dist && python3 -m http.server 8080 > /dev/null 2>&1 &)
           sleep 2
           node ci/preview.mjs http://localhost:8080/ preview
-          node ci/preview.mjs http://localhost:8080/ preview-webgpu webgpu || true
-          for f in preview-webgpu/*; do cp "$f" "preview/webgpu-$(basename "$f")"; done || true
+          node ci/preview.mjs http://localhost:8080/ preview-webgl webgl || true
+          for f in preview-webgl/*; do cp "$f" "preview/webgl-$(basename "$f")"; done || true
           ls preview
       - name: Publish preview
         if: always()
