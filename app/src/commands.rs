@@ -1920,25 +1920,46 @@ fn open(app: App) {
             host::upload().await
         };
         match picked {
-            Ok(Some(f)) => {
-                let mut ed = app.blank_project();
-                match ed.open_json(&f.text, f.path.clone().into()) {
-                    Ok(()) => {
-                        ed.frame_all(ed.active_view);
-                        ed.status = format!("Opened {}", f.path);
-                        // Replaces an untouched Untitled project; otherwise opens beside it.
-                        if app.peek(|e| e.is_pristine()) {
-                            app.replace_project(ed);
-                        } else {
-                            app.add_project(ed);
-                        }
-                        app.log_line(format!("Opened {}", f.path), false);
-                    }
-                    Err(err) => app.error(format!("Could not open {}: {err}", f.path)),
-                }
-            }
+            Ok(Some(f)) => open_opened(app, f),
             Ok(None) => {}
             Err(e) => app.error(format!("Could not open: {e}")),
+        }
+    });
+}
+
+/// Opens a scene that was read: it replaces an untouched Untitled project,
+/// otherwise it opens beside the others. A file that's already open is
+/// switched to instead.
+pub fn open_opened(app: App, f: host::Opened) {
+    if let Some(i) = app.project_with_path(&f.path) {
+        app.switch_project(i);
+        app.status(format!("{} is already open", f.path));
+        return;
+    }
+    let mut ed = app.blank_project();
+    match ed.open_json(&f.text, f.path.clone().into()) {
+        Ok(()) => {
+            ed.frame_all(ed.active_view);
+            ed.status = format!("Opened {}", f.path);
+            if app.peek(|e| e.is_pristine()) {
+                app.replace_project(ed);
+            } else {
+                app.add_project(ed);
+            }
+            app.log_line(format!("Opened {}", f.path), false);
+        }
+        Err(err) => app.error(format!("Could not open {}: {err}", f.path)),
+    }
+}
+
+/// Opens scene files by path (given at start, or by a second launch).
+pub fn open_paths(app: App, paths: Vec<String>) {
+    leptos::task::spawn_local(async move {
+        for p in paths {
+            match host::read_scene(&p).await {
+                Ok(f) => open_opened(app, f),
+                Err(e) => app.error(format!("Could not open {p}: {e}")),
+            }
         }
     });
 }
@@ -1977,7 +1998,7 @@ fn save(app: App, save_as: bool) {
                 .as_ref()
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Untitled.forma3d.json".to_owned());
+                .unwrap_or_else(|| "Untitled.f3d".to_owned());
             (path, e.scene.to_json().unwrap_or_default(), name)
         });
         if host::in_tauri() {

@@ -59,6 +59,21 @@ pub async fn open_scene() -> Result<Option<Opened>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Reads a scene file by path (desktop app).
+pub async fn read_scene(path: &str) -> Result<Opened, String> {
+    let v = invoke("read_scene", &serde_json::json!({ "path": path })).await?;
+    serde_wasm_bindgen::from_value(v).map_err(|e| e.to_string())
+}
+
+/// The scene files the app was started with (double-clicked or named on
+/// the command line).
+pub async fn startup_files() -> Vec<String> {
+    match invoke("startup_files", &serde_json::json!({})).await {
+        Ok(v) => serde_wasm_bindgen::from_value(v).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Writes a scene, asking where first when `path` is None. Returns the path
 /// written, or `None` when cancelled.
 pub async fn save_scene(
@@ -329,7 +344,7 @@ pub async fn upload() -> Result<Option<Opened>, String> {
         .dyn_into()
         .map_err(|_| "no input")?;
     input.set_type("file");
-    input.set_accept(".json,application/json");
+    input.set_accept(".f3d,.json,application/json");
     let (tx, rx) = futures_channel();
     let tx = std::rc::Rc::new(std::cell::RefCell::new(Some(tx)));
     let input2 = input.clone();

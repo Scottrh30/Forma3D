@@ -119,6 +119,21 @@ fn Root() -> impl IntoView {
     settings::start_autosave(app);
     render::init(app);
     workspace::install_tab_dragging();
+    // Scene files the desktop app was started with, or that a second launch
+    // (double-clicking another .f3d) passes on.
+    if host::in_tauri() {
+        leptos::task::spawn_local(async move {
+            let files = host::startup_files().await;
+            if !files.is_empty() {
+                commands::open_paths(app, files);
+            }
+        });
+        host::listen("open-files", move |v| {
+            if let Ok(files) = serde_wasm_bindgen::from_value::<Vec<String>>(v) {
+                commands::open_paths(app, files);
+            }
+        });
+    }
     iconbar::install(app);
 
     // The window's close button, Alt+F4 and the taskbar ask first when there

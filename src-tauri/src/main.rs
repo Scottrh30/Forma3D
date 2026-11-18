@@ -1,7 +1,9 @@
 //! Forma3D's desktop shell. The whole app (interface and modelling engine)
 //! runs as WebAssembly in the window; this side only does what a web page
 //! can't: native file dialogs, reading and writing files, and the settings
-//! and autosave folders, and final renders (on every CPU core, in a thread).
+//! and autosave folders, final renders (on every CPU core, in a thread), and
+//! the scene files it was started with (double-clicking a `.f3d`, or
+//! `Forma3D.exe scene.f3d`).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -28,13 +30,44 @@ async fn open_scene(app: tauri::AppHandle) -> Result<Option<Opened>, String> {
         .dialog()
         .file()
         .set_title("Open a Forma3D scene")
-        .add_filter("Forma3D scene", &["json"])
+        .add_filter("Forma3D scene", &["f3d", "json"])
         .add_filter("All files", &["*"])
         .blocking_pick_file();
     let Some(picked) = picked else { return Ok(None) };
     let path = picked.into_path().map_err(|e| e.to_string())?;
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(Some(Opened { path: path.display().to_string(), text }))
+}
+
+/// Reads a scene file by path (files given at start or by a second launch).
+#[tauri::command]
+async fn read_scene(path: String) -> Result<Opened, String> {
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    Ok(Opened { path, text })
+}
+
+/// The scene files in a command line (skipping the program and any
+/// `-flags`), made absolute against `cwd`.
+fn scene_args(args: &[String], cwd: &Path) -> Vec<String> {
+    args.iter()
+        .skip(1)
+        .filter(|a| !a.starts_with('-'))
+        .map(|a| {
+            let p = PathBuf::from(a);
+            let p = if p.is_absolute() { p } else { cwd.join(p) };
+            p.display().to_string()
+        })
+        .filter(|p| Path::new(p).is_file())
+        .collect()
+}
+
+/// Files the app was started with; handed out once.
+#[derive(Default)]
+struct Startup(Mutex<Vec<String>>);
+
+#[tauri::command]
+fn startup_files(startup: tauri::State<'_, Startup>) -> Vec<String> {
+    startup.0.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default()
 }
 
 /// Writes a scene; asks where first when there is no path yet (Save As).
@@ -47,7 +80,7 @@ async fn save_scene(app: tauri::AppHandle, path: Option<String>, suggested_name:
                 .dialog()
                 .file()
                 .set_title("Save the Forma3D scene")
-                .add_filter("Forma3D scene", &["json"])
+                .add_filter("Forma3D scene", &["f3d"])
                 .set_file_name(&suggested_name)
                 .blocking_save_file();
             match picked {
@@ -246,14 +279,46 @@ async fn save_image(app: tauri::AppHandle, suggested_name: String, extension: St
     Ok(Some(path.display().to_string()))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scene_arguments() {
+        let dir = std::env::temp_dir().join("forma3d-args-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.f3d"), "{}").unwrap();
+        let args = vec!["Forma3D.exe".to_owned(), "--flag".to_owned(), "a.f3d".to_owned(), "missing.f3d".to_owned()];
+        let got = scene_args(&args, &dir);
+        assert_eq!(got, vec![dir.join("a.f3d").display().to_string()]);
+    }
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let files = scene_args(&args, &cwd);
     tauri::Builder::default()
+        // First, so a second launch stops here and passes its files on.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            let files = scene_args(&argv, Path::new(&cwd));
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+            if !files.is_empty() {
+                let _ = app.emit("open-files", files);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         // Saved when the app quits and put back when the window opens.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(Renders::default())
+        .manage(Startup(Mutex::new(files)))
         .invoke_handler(tauri::generate_handler![
             open_scene,
+            read_scene,
+            startup_files,
             save_scene,
             read_setting,
             write_setting,

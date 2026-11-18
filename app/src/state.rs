@@ -257,6 +257,16 @@ impl App {
         self.status(format!("Closed {name}"));
     }
 
+    /// The Window menu position of the project saved at `path`, if open.
+    pub fn project_with_path(&self, path: &str) -> Option<usize> {
+        let same = |e: &Editor| e.file_path.as_ref().is_some_and(|p| p.display().to_string() == path);
+        if self.peek(same) {
+            return Some(self.slot.get_untracked());
+        }
+        let slot = self.slot.get_untracked();
+        self.others.with_value(|o| o.iter().position(same)).map(|i| if i < slot { i } else { i + 1 })
+    }
+
     /// Brings project `index` (Window menu order) to the front.
     pub fn switch_project(&self, index: usize) {
         let slot = self.slot.get_untracked();

@@ -316,7 +316,7 @@ fn request(ed: &Editor, target: Target) -> (RenderRequest, Option<String>) {
         [(w * 0.2) as u32, (h * 0.2) as u32, (w * 0.8) as u32, (h * 0.8) as u32]
     });
     let folder = ed.file_path.as_ref().and_then(|p| p.parent()).map(|p| p.display().to_string());
-    let project = ed.project_name().trim_end_matches(".json").to_owned();
+    let project = ed.project_name().trim_end_matches(".json").trim_end_matches(".f3d").trim_end_matches(".forma3d").to_owned();
     (RenderRequest { scene, fps: ed.timeline.fps, frames, settings: s, fallback, region, project, take: take_name(ed) }, folder)
 }
 
