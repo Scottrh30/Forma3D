@@ -1,6 +1,6 @@
 //! Forma3D's engine: the scene, meshes and their tools, the editor state with
 //! undo, and the wgpu viewport renderer. The interfaces (the Tauri + Leptos
-//! app and the classic egui app) are built on top of it.
+//! app) is built on top of it.
 
 // A few small helpers exist for tests and upcoming features.
 #![allow(dead_code)]

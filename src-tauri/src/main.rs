@@ -249,6 +249,8 @@ async fn save_image(app: tauri::AppHandle, suggested_name: String, extension: St
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Saved when the app quits and put back when the window opens.
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(Renders::default())
         .invoke_handler(tauri::generate_handler![
             open_scene,

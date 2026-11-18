@@ -13,7 +13,6 @@ This is original code. It does not use any Blender source, and it uses no Cinema
 | `core/` | **forma3d-core**: the engine. Scene, meshes and their tools, editor state with undo, and the wgpu viewport renderer. No interface code. |
 | `app/` | **forma3d-app**: the interface, written with [Leptos](https://leptos.dev) and compiled to WebAssembly together with the engine. The 3D view draws through WebGPU when the system offers it and WebGL 2 otherwise (Preferences > Graphics, or `?webgl` / `?webgpu` in the address). |
 | `src-tauri/` | **forma3d**: the [Tauri](https://tauri.app) desktop shell. It opens the window and does what a web page can't: native Open / Save dialogs and file access. |
-| `classic/` | **forma3d-classic**: the original egui interface. It still has everything the new interface hasn't caught up with yet (see below). |
 
 ## Run
 
@@ -27,13 +26,10 @@ The desktop app (Tauri + Leptos) needs the WebAssembly target, [Trunk](https://t
 The interface also runs in a browser with WebGPU or WebGL 2 (Chrome, Edge, Firefox): `cd app && trunk serve`,
 then open http://localhost:1420. There, Open and Save use the browser's upload and download.
 
-The classic egui app:
+Tests (engine and interface):
 
-    cargo run --release -p forma3d-classic
-
-Tests (engine and classic interface):
-
-    cargo test        # 224 unit tests (scene, camera, gizmos, picking, history, generators, deformers, booleans, mesh editing, ...)
+    cargo test        # the engine (scene, camera, gizmos, picking, history, generators, deformers, booleans,
+                      # mesh editing, rendering, ...) and the interface's logic (commands, keymap, layouts, ...)
 
 ## Windows .exe
 
@@ -44,17 +40,21 @@ published as the repository's latest release:
   uses Microsoft Edge WebView2, which Windows 10 and 11 include.
 - https://github.com/Scottrh30/forma3d/releases/latest/download/Forma3D-setup.exe: installs it (and
   WebView2, if a PC lacks it) with a Start menu entry.
-- https://github.com/Scottrh30/forma3d/releases/latest/download/Forma3D-classic.exe: the egui interface.
 
 A second job builds the web version, clicks through it in Chromium and publishes the screenshots and browser
 console as the "preview" release, so the interface can be checked without Windows.
 
-On a Windows PC without GitHub: install Rust, then run `build-windows.bat` to build the classic app.
+On a Windows PC without GitHub: install Rust and Node.js, then run `build-windows.bat`.
 
-## The Tauri + Leptos interface
+The original egui interface ("Classic") was retired on 17 November 2026 once this app matched it; its last
+version is kept on the `classic-final` branch.
 
-The Tauri app has everything the classic one has; the sections below describe the features (they work the same
-in both). Differences of detail:
+## The interface
+
+Forma3D's interface is Tauri + Leptos, and staying on it is a settled decision: Slint, Dioxus and iced were
+compared (November 2026) and none was worth rewriting the interface for. Highlights:
+
+- **The window** remembers its size, position and whether it was maximized or full screen.
 
 - **Workspaces** (tabs at the top right: Model, Track, UV Edit, Animate, Sculpt, Custom) arrange the panels in
   five tab groups around the viewport. **Drag a tab** onto another group's tabs to move it there (or along its
@@ -76,7 +76,7 @@ in both). Differences of detail:
   under My Assets, click to add, × to delete; saved as `assets.json` in the settings.
 - **Graphics** (Preferences): Automatic uses WebGPU when the system offers it and falls back to WebGL 2.
 
-## What the engine and classic interface do
+## What Forma3D does
 
 - A Cinema 4D-style interface (Forma3D's own icons, no Cinema 4D branding):
   - Menu bar (File, Edit, Create, Modes, Select, Tools, Mesh, Window, Help) with icons and shortcuts.
