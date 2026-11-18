@@ -43,6 +43,12 @@ jobs:
           name: Forma3D-windows
           path: dist/
           retention-days: 3
+      - name: Remove retired downloads from the release
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete-asset latest Forma3D-classic.exe --repo "$GITHUB_REPOSITORY" -y || true
       - name: Publish release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
