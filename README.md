@@ -75,6 +75,13 @@ compared (November 2026) and none was worth rewriting the interface for. Highlig
   the selected objects with their children and materials; Save Material keeps the selected material. They show
   under My Assets, click to add, × to delete; saved as `assets.json` in the settings.
 - **Graphics** (Preferences): Automatic uses WebGPU when the system offers it and falls back to WebGL 2.
+- **Materials** (the Materials panel, with a material selected): Colour and a Picture (PNG or JPEG, stored in the
+  scene, with Projection, Tiles and Mix); Roughness, Metalness and Specular; Transparency with Refraction (IOR);
+  Emission colour and Strength. Renders use all of them: glossy and mirror reflections, tinted metals, refracting
+  glass that lets light through its shadows, and glowing surfaces (which light the scene in Physical with GI).
+- **Worker threads**: Booleans, and any generator that takes longer than a frame to build, are built on the
+  desktop app's worker threads. The object keeps its previous shape until the new one is ready, so dragging a
+  parameter stays smooth. Final renders run on worker threads too.
 
 ## What Forma3D does
 
@@ -252,6 +259,10 @@ compared (November 2026) and none was worth rewriting the interface for. Highlig
 ## Files, projects and the clipboard
 
 - **File menu:** New Project, Open, Close, Revert to Saved, Save, Save As, Merge Project, Quit.
+- **Scene files** are `.f3d` (JSON inside; Open also takes older `.json` scenes). The installer associates `.f3d`
+  with Forma3D, so double-clicking one opens it; `Forma3D.exe scene.f3d` opens it from the command line. A second
+  double-click hands the file to the running window instead of starting another copy, and a file that is already
+  open is brought forward.
 - **Several projects can be open at once**, as in Cinema 4D. New Project opens an empty one alongside the others;
   Open opens the file as another project (or in place of an untouched Untitled one); the end of the **Window**
   menu lists every open project (an asterisk marks unsaved changes) and switches between them. Close closes the
@@ -416,9 +427,12 @@ All open from Window > Panels; the Model workspace has them as tabs.
 - Undo still snapshots the whole scene, which gets heavy with very large meshes.
 - No import/export formats other than the JSON scene file.
 - The timeline only moves a time cursor. There are no keyframes yet.
-- The final renderer shades every material as a plain colour with a little Fresnel reflection (materials have
-  only a colour channel); there are no textures, transparency, emission or HDR environments. Motion blur and
-  render-time animation (keyframes) don't exist yet. 16-bit PNG holds the display colours, not linear HDR.
+- The viewport shows each material's colour only; reflections, transparency, glow and pictures show in renders.
+  Pictures are projected (Cubic, Flat, Spherical, Cylindrical) because objects have no UV coordinates yet. There are
+  no bump or normal maps and no HDR environments. Motion blur and render-time animation (keyframes) don't exist
+  yet. 16-bit PNG holds the display colours, not linear HDR.
+- Slow meshes are built on worker threads only in the desktop app; in a browser they are still built on the
+  interface's thread.
 - The Viewport (Hardware) engine can't show depth of field or stereo and renders one pass.
 - Viewport Reflections show an environment, not other objects (no screen-space reflections yet).
 - Viewport Options are global, not per view, and are not saved with the scene.
