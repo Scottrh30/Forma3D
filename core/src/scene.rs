@@ -420,6 +420,43 @@ impl Scene {
     }
 
     /// `id` and everything beneath it, parents before children.
+    /// A copy holding only `id` and its descendants, with their ids kept
+    /// and `id` made top-level (enough to build its mesh elsewhere).
+    pub fn subtree_scene(&self, id: ObjectId) -> Scene {
+        let keep: std::collections::HashSet<ObjectId> = self.subtree(id).into_iter().collect();
+        let mut out = Scene { objects: BTreeMap::new(), roots: Vec::new(), ..self.clone_settings() };
+        for (&k, o) in &self.objects {
+            if keep.contains(&k) {
+                let mut o = o.clone();
+                if k == id {
+                    o.parent = None;
+                }
+                out.objects.insert(k, o);
+            }
+        }
+        if out.objects.contains_key(&id) {
+            out.roots.push(id);
+        }
+        out
+    }
+
+    /// Everything but the objects (materials, layers, settings).
+    fn clone_settings(&self) -> Scene {
+        Scene {
+            next_object: self.next_object,
+            next_material: self.next_material,
+            objects: BTreeMap::new(),
+            roots: Vec::new(),
+            materials: self.materials.clone(),
+            layers: self.layers.clone(),
+            next_layer: self.next_layer,
+            workplane: self.workplane.clone(),
+            takes: Default::default(),
+            render: self.render.clone(),
+            render_camera: None,
+        }
+    }
+
     pub fn subtree(&self, id: ObjectId) -> Vec<ObjectId> {
         let mut out = Vec::new();
         let mut stack = vec![id];

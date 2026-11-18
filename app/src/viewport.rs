@@ -711,6 +711,10 @@ pub fn Viewport() -> impl IntoView {
             .unwrap_or(false);
         let p = ptr.get_value();
         let Some((draws, rects, overlay, tri, objs)) = app.ed.try_update_value(|ed| {
+            // In the desktop app, slow meshes are built on worker threads.
+            if crate::host::in_tauri() && !ed.meshes.offloading() {
+                crate::worker::install(app, ed);
+            }
             let rects = view_rects(ed, size);
             // Render View renders at the active view's size; a looked-through
             // camera and the Perspective view move together.

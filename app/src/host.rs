@@ -59,6 +59,24 @@ pub async fn open_scene() -> Result<Option<Opened>, String> {
         .map_err(|e| e.to_string())
 }
 
+#[derive(serde::Deserialize)]
+pub struct BuiltMesh {
+    pub positions: Vec<f32>,
+    pub normals: Vec<f32>,
+    pub indices: Vec<u32>,
+    pub edges: Vec<u32>,
+    pub ms: f64,
+}
+
+/// Builds a mesh on a backend worker thread (desktop app).
+pub async fn build_mesh(scene: String, object: u64) -> Result<Option<BuiltMesh>, String> {
+    let v = invoke("build_mesh", &serde_json::json!({ "scene": scene, "object": object })).await?;
+    if v.is_null() || v.is_undefined() {
+        return Ok(None);
+    }
+    serde_wasm_bindgen::from_value(v).map(Some).map_err(|e| e.to_string())
+}
+
 /// Reads a scene file by path (desktop app).
 pub async fn read_scene(path: &str) -> Result<Opened, String> {
     let v = invoke("read_scene", &serde_json::json!({ "path": path })).await?;

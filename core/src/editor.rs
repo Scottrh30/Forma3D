@@ -176,6 +176,30 @@ pub struct MeshCache {
     map: HashMap<PrimitiveKey, (Arc<Mesh>, bool)>,
     generated: HashMap<u64, (Arc<Mesh>, bool)>,
     null: Arc<Mesh>,
+    /// Builds slow meshes elsewhere (another thread); None builds them here.
+    offload: Option<Box<dyn FnMut(MeshJob)>>,
+    /// A clock in milliseconds, to learn which meshes are slow.
+    pub clock: fn() -> f64,
+    /// How long each object's mesh took to build here last time (ms).
+    cost: HashMap<ObjectId, f64>,
+    /// The newest mesh each object showed (kept while a new one is built).
+    last: HashMap<ObjectId, Arc<Mesh>>,
+    /// The content key being built elsewhere for each object.
+    pending: HashMap<ObjectId, u64>,
+}
+
+/// A mesh to build elsewhere: the object's own part of the scene.
+pub struct MeshJob {
+    pub key: u64,
+    pub object: ObjectId,
+    pub scene: Scene,
+}
+
+/// Meshes slower than this (ms) are built elsewhere when that's possible.
+pub const SLOW_MESH_MS: f64 = 20.0;
+
+fn no_clock() -> f64 {
+    0.0
 }
 
 impl Default for MeshCache {
@@ -184,8 +208,31 @@ impl Default for MeshCache {
             map: HashMap::new(),
             generated: HashMap::new(),
             null: Arc::new(mesh::null_cross(28.0)),
+            offload: None,
+            clock: no_clock,
+            cost: HashMap::new(),
+            last: HashMap::new(),
+            pending: HashMap::new(),
         }
     }
+}
+
+impl std::fmt::Debug for MeshCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeshCache").field("meshes", &self.map.len()).field("generated", &self.generated.len()).field("pending", &self.pending.len()).finish()
+    }
+}
+
+/// Kinds that are slow from the start (before their cost is measured).
+fn heavy(scene: &Scene, id: ObjectId) -> bool {
+    matches!(scene.get(id).map(|o| &o.kind), Some(ObjectKind::Generator(generator::Generator::Boolean { .. })))
+}
+
+/// Builds a job's mesh (on whatever thread runs it).
+pub fn build_job_mesh(scene: &Scene, object: ObjectId) -> Option<Mesh> {
+    let mut cache = MeshCache::default();
+    let geo = generator::eval_geo(scene, object, &mut |p| cache.get(p));
+    (!geo.is_empty()).then(|| geo.into_mesh())
 }
 
 impl MeshCache {
@@ -213,6 +260,77 @@ impl MeshCache {
         let mesh = Arc::new(geo.into_mesh());
         self.generated.insert(key, (mesh.clone(), true));
         Some(mesh)
+    }
+
+    /// Hands slow meshes to `f` to build elsewhere; results come back
+    /// through `finish`.
+    pub fn set_offload(&mut self, f: Box<dyn FnMut(MeshJob)>, clock: fn() -> f64) {
+        self.offload = Some(f);
+        self.clock = clock;
+    }
+
+    pub fn offloading(&self) -> bool {
+        self.offload.is_some()
+    }
+
+    /// Meshes being built elsewhere right now.
+    pub fn pending(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// For the viewport: like `generated`, but a slow mesh is built
+    /// elsewhere while the object keeps showing its previous one.
+    pub fn generated_view(&mut self, scene: &Scene, id: ObjectId) -> Option<Arc<Mesh>> {
+        let key = generator::content_hash(scene, id);
+        if let Some(entry) = self.generated.get_mut(&key) {
+            entry.1 = true;
+            let m = entry.0.clone();
+            self.last.insert(id, m.clone());
+            return Some(m);
+        }
+        let slow = self.cost.get(&id).is_some_and(|&c| c > SLOW_MESH_MS) || (!self.cost.contains_key(&id) && heavy(scene, id));
+        if self.offload.is_some() && slow {
+            // One job per object at a time: the newest state is sent when
+            // the current one comes back.
+            if !self.pending.contains_key(&id) {
+                self.pending.insert(id, key);
+                let job = MeshJob { key, object: id, scene: scene.subtree_scene(id) };
+                if let Some(f) = self.offload.as_mut() {
+                    f(job);
+                }
+            }
+            return self.last.get(&id).cloned();
+        }
+        let t0 = (self.clock)();
+        let m = self.generated(scene, id);
+        let dt = (self.clock)() - t0;
+        if dt > 0.0 {
+            self.cost.insert(id, dt);
+        }
+        if let Some(m) = &m {
+            self.last.insert(id, m.clone());
+        }
+        m
+    }
+
+    /// Whether this cache is waiting for that object's mesh in that state.
+    pub fn waiting_for(&self, object: ObjectId, key: u64) -> bool {
+        self.pending.get(&object) == Some(&key)
+    }
+
+    /// A mesh built elsewhere is back. Returns whether it is new to show.
+    pub fn finish(&mut self, key: u64, object: ObjectId, mesh: Option<Mesh>, ms: f64) -> bool {
+        if self.pending.get(&object) != Some(&key) {
+            return false;
+        }
+        self.pending.remove(&object);
+        self.cost.insert(object, ms.max(SLOW_MESH_MS + 1.0));
+        if let Some(m) = mesh {
+            let m = Arc::new(m);
+            self.generated.insert(key, (m.clone(), true));
+            self.last.insert(object, m);
+        }
+        true
     }
 
     /// The wire cage of a deformer, cached by its parameters.
@@ -283,6 +401,12 @@ impl MeshCache {
     pub fn end_frame(&mut self) {
         self.map.retain(|_, (_, used)| std::mem::replace(used, false));
         self.generated.retain(|_, (_, used)| std::mem::replace(used, false));
+    }
+
+    /// Forgets objects that are gone.
+    pub fn forget_missing(&mut self, scene: &Scene) {
+        self.last.retain(|id, _| scene.get(*id).is_some());
+        self.cost.retain(|id, _| scene.get(*id).is_some());
     }
 
     pub fn len(&self) -> usize {
@@ -1571,7 +1695,7 @@ impl Editor {
                 ObjectKind::Primitive(p) => (meshes.get(p), ItemKind::Surface),
                 // Switched off: its children are drawn on their own; show a marker.
                 ObjectKind::Generator(_) if !o.enabled => (meshes.null(), ItemKind::LinesOnly),
-                ObjectKind::Generator(_) => match meshes.generated(scene, o.id) {
+                ObjectKind::Generator(_) => match if final_render { meshes.generated(scene, o.id) } else { meshes.generated_view(scene, o.id) } {
                     Some(m) => (m, ItemKind::Surface),
                     None => (meshes.null(), ItemKind::LinesOnly),
                 },
@@ -1813,6 +1937,47 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn slow_meshes_are_built_elsewhere_and_shown_when_back() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let mut scene = Scene::new();
+        let b = scene.add_generator(GeneratorKind::Boolean, None);
+        scene.add_primitive(crate::primitive::PrimitiveKind::Cube, Some(b));
+        let s = scene.add_primitive(crate::primitive::PrimitiveKind::Sphere, Some(b));
+        scene.get_mut(s).unwrap().pos = Vec3::new(60.0, 60.0, 0.0);
+        let mut ed = Editor::new(scene);
+        let jobs: Rc<RefCell<Vec<MeshJob>>> = Rc::default();
+        let sink = jobs.clone();
+        ed.meshes.set_offload(Box::new(move |j| sink.borrow_mut().push(j)), || 0.0);
+        let drawn = |ed: &mut Editor| ed.render_objects().into_iter().find(|o| o.id == b).map(|o| o.kind);
+        // A Boolean that isn't built yet goes elsewhere at once.
+        ed.scene.get_mut(s).unwrap().pos = Vec3::new(70.0, 60.0, 0.0);
+        drawn(&mut ed);
+        assert_eq!(jobs.borrow().len(), 1);
+        // Asking again doesn't send it twice.
+        drawn(&mut ed);
+        assert_eq!(jobs.borrow().len(), 1);
+        let job = jobs.borrow_mut().remove(0);
+        assert_eq!(job.scene.roots(), &[b][..]);
+        let mesh = build_job_mesh(&job.scene, job.object);
+        let tris = mesh.as_ref().map(|m| m.indices.len()).unwrap_or(0);
+        assert!(tris > 0);
+        assert!(ed.meshes.finish(job.key, job.object, mesh, 50.0));
+        let shown = ed.render_objects().into_iter().find(|o| o.id == b).unwrap();
+        assert_eq!(shown.mesh.indices.len(), tris);
+        // A change: the previous mesh stays up while the new one is built.
+        ed.scene.get_mut(s).unwrap().pos = Vec3::new(90.0, 60.0, 0.0);
+        let shown = ed.render_objects().into_iter().find(|o| o.id == b).unwrap();
+        assert_eq!(shown.mesh.indices.len(), tris);
+        assert_eq!(jobs.borrow().len(), 1);
+        // A result for an older state is ignored.
+        assert!(!ed.meshes.finish(job.key, job.object, None, 50.0));
+        // Final renders never wait: they build it here.
+        let finals = ed.final_objects();
+        assert!(finals.iter().any(|o| o.id == b));
+    }
 
     fn editor() -> Editor {
         Editor::new(Scene::demo())

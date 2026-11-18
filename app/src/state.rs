@@ -323,6 +323,12 @@ impl App {
     }
 
     /// Runs `f` on every open project (for settings that apply to all).
+    /// Like `each_project`, for work that keeps state between projects.
+    pub fn each_project_mut(&self, mut f: impl FnMut(&mut Editor)) {
+        self.ed.update_value(|e| f(e));
+        self.others.update_value(|o| o.iter_mut().for_each(&mut f));
+    }
+
     pub fn each_project(&self, f: impl Fn(&mut Editor)) {
         self.ed.update_value(&f);
         self.others.update_value(|o| o.iter_mut().for_each(&f));

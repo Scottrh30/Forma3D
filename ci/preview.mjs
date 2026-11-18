@@ -254,8 +254,13 @@ await commander('save selection to asset browser');
 await tab('Asset Browser');
 await shot('29-my-assets');
 
+// The material editor.
+await commander('new material');
+await tab('Materials');
+await shot('30-material-editor');
+
 await tab('Console');
-await shot('30-console');
+await shot('31-console');
 
 fs.writeFileSync(`${out}/console.txt`, log.join('\n'));
 await browser.close();

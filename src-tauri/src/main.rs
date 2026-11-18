@@ -1,7 +1,7 @@
 //! Forma3D's desktop shell. The whole app (interface and modelling engine)
 //! runs as WebAssembly in the window; this side only does what a web page
 //! can't: native file dialogs, reading and writing files, and the settings
-//! and autosave folders, final renders (on every CPU core, in a thread), and
+//! and autosave folders, slow meshes and final renders (on worker threads), and
 //! the scene files it was started with (double-clicking a `.f3d`, or
 //! `Forma3D.exe scene.f3d`).
 
@@ -59,6 +59,39 @@ fn scene_args(args: &[String], cwd: &Path) -> Vec<String> {
         })
         .filter(|p| Path::new(p).is_file())
         .collect()
+}
+
+/// A mesh built here for the interface: flat arrays (positions and normals
+/// in threes), and how long it took.
+#[derive(serde::Serialize)]
+struct BuiltMesh {
+    positions: Vec<f32>,
+    normals: Vec<f32>,
+    indices: Vec<u32>,
+    edges: Vec<u32>,
+    ms: f64,
+}
+
+/// Builds a slow mesh (a Boolean, a deep subdivision...) on a worker
+/// thread, so the interface stays smooth. `scene` holds just the object
+/// and its children.
+#[tauri::command]
+async fn build_mesh(scene: String, object: u64) -> Result<Option<BuiltMesh>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let t0 = Instant::now();
+        let scene = forma3d_core::scene::Scene::from_json(&scene).map_err(|e| e.to_string())?;
+        let mesh = forma3d_core::editor::build_job_mesh(&scene, object);
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        Ok(mesh.map(|m| BuiltMesh {
+            positions: m.vertices.iter().flat_map(|v| v.pos).collect(),
+            normals: m.vertices.iter().flat_map(|v| v.normal).collect(),
+            indices: m.indices,
+            edges: m.edges,
+            ms,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Files the app was started with; handed out once.
@@ -319,6 +352,7 @@ fn main() {
             open_scene,
             read_scene,
             startup_files,
+            build_mesh,
             save_scene,
             read_setting,
             write_setting,

@@ -25,6 +25,7 @@ mod state;
 mod timeline;
 mod viewport;
 mod vinput;
+mod worker;
 mod workspace;
 
 use chrome::{Commander, Dialogs, StatusBar, TitleBar, Toolbar};
