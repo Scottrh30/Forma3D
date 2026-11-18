@@ -154,3 +154,37 @@ fn requests_name_files_and_dates() {
     assert_eq!(date_time(0), ("19700101".to_owned(), "000000".to_owned()));
     assert_eq!(date_time(1_794_830_400).0, "20261116");
 }
+
+#[test]
+fn materials_glow_let_light_through_and_texture() {
+    let mut ed = Editor::new(Scene::new());
+    let cube = ed.scene.add_primitive(PrimitiveKind::Cube, None);
+    let m = ed.scene.add_material("m", [0.2, 0.2, 0.2]);
+    ed.scene.get_mut(cube).unwrap().material = Some(m);
+    let s = RenderSettings { background: [0.0, 0.0, 1.0], alpha: false, ..small(Engine::Standard) };
+    let plain = centre(&render(&mut ed, &s).passes[0].1);
+    // Glowing: brighter.
+    ed.scene.material_mut(m).unwrap().emission = [1.0, 0.0, 0.0];
+    ed.scene.material_mut(m).unwrap().emission_strength = 2.0;
+    let glow = centre(&render(&mut ed, &s).passes[0].1);
+    assert!(glow[0] > plain[0] + 80, "{glow:?} vs {plain:?}");
+    // See-through: the blue background shows through a clear, colourless cube.
+    let mat = ed.scene.material_mut(m).unwrap();
+    mat.emission_strength = 0.0;
+    mat.transparency = 1.0;
+    mat.ior = 1.0;
+    mat.color = [1.0, 1.0, 1.0];
+    let clear = centre(&render(&mut ed, &s).passes[0].1);
+    assert!(clear[2] > clear[0] + 60, "blue shows through: {clear:?}");
+    // A red picture on a white material.
+    let mat = ed.scene.material_mut(m).unwrap();
+    mat.transparency = 0.0;
+    let red = encode_png8(&Image { width: 2, height: 2, pixels: [255u8, 0, 0, 255].repeat(4) });
+    mat.texture = Some(crate::texture::Texture::from_file("red.png", &red).unwrap());
+    let tex = centre(&render(&mut ed, &s).passes[0].1);
+    assert!(tex[0] > tex[1] + 40 && tex[0] > tex[2] + 40, "textured red: {tex:?}");
+    // Old scene files without the new fields still load.
+    let old: crate::scene::Material = serde_json::from_str(r#"{"id":1,"name":"a","color":[1,0,0]}"#).unwrap();
+    assert_eq!(old.roughness, 0.5);
+    assert!(old.texture.is_none());
+}

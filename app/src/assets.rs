@@ -17,15 +17,18 @@ pub struct Saved {
     pub scene: Option<String>,
     #[serde(default)]
     pub color: Option<[f32; 3]>,
+    /// A saved material's full settings (reflection, picture, glow...).
+    #[serde(default)]
+    pub look: Option<forma3d_core::scene::Material>,
 }
 
 impl Saved {
     pub fn objects(name: &str, scene: &Scene) -> Result<Saved, String> {
-        Ok(Saved { name: name.to_owned(), kind: AssetKind::Object, scene: Some(scene.to_json().map_err(|e| e.to_string())?), color: None })
+        Ok(Saved { name: name.to_owned(), kind: AssetKind::Object, scene: Some(scene.to_json().map_err(|e| e.to_string())?), color: None, look: None })
     }
 
-    pub fn material(name: &str, color: [f32; 3]) -> Saved {
-        Saved { name: name.to_owned(), kind: AssetKind::Material, scene: None, color: Some(color) }
+    pub fn material(name: &str, look: &forma3d_core::scene::Material) -> Saved {
+        Saved { name: name.to_owned(), kind: AssetKind::Material, scene: None, color: Some(look.color), look: Some(look.clone()) }
     }
 
     /// As an Asset Browser entry (None if it can't be read).
@@ -57,7 +60,7 @@ mod tests {
         let mut scene = Scene::new();
         scene.add_primitive(PrimitiveKind::Cube, None);
         let s = Saved::objects("Box", &scene).unwrap();
-        let back: Vec<Saved> = serde_json::from_str(&serde_json::to_string(&vec![s.clone(), Saved::material("Red", [1.0, 0.0, 0.0])]).unwrap()).unwrap();
+        let back: Vec<Saved> = serde_json::from_str(&serde_json::to_string(&vec![s.clone(), Saved::material("Red", &forma3d_core::scene::Material::new(1, "Red", [1.0, 0.0, 0.0]))]).unwrap()).unwrap();
         assert_eq!(back[0], s);
         match back[0].asset().unwrap().content {
             Content::Scene(sc) => assert_eq!(sc.len(), scene.len()),

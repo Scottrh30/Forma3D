@@ -113,11 +113,86 @@ impl Object {
     }
 }
 
+/// A material: its colour (shown in the viewport) and how it reflects,
+/// lets light through and glows in final renders.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Material {
     pub id: MaterialId,
     pub name: String,
     pub color: [f32; 3],
+    /// 0 is a mirror finish, 1 is completely matte.
+    #[serde(default = "default_roughness")]
+    pub roughness: f32,
+    /// 0 is a dielectric (plastic, paint, glass), 1 is a metal: metals tint
+    /// their reflections with the colour and have no diffuse part.
+    #[serde(default)]
+    pub metalness: f32,
+    /// How strongly a dielectric reflects (0.5 is the usual 4 %).
+    #[serde(default = "default_specular")]
+    pub specular: f32,
+    /// 0 is opaque, 1 lets light through (glass, water).
+    #[serde(default)]
+    pub transparency: f32,
+    /// Index of refraction for transparent materials.
+    #[serde(default = "default_ior")]
+    pub ior: f32,
+    /// Light the surface gives off: a colour and how strong it is.
+    #[serde(default)]
+    pub emission: [f32; 3],
+    #[serde(default)]
+    pub emission_strength: f32,
+    /// An image for the colour, projected onto the object.
+    #[serde(default)]
+    pub texture: Option<crate::texture::Texture>,
+}
+
+fn default_roughness() -> f32 {
+    0.5
+}
+
+fn default_specular() -> f32 {
+    0.5
+}
+
+fn default_ior() -> f32 {
+    1.5
+}
+
+impl Material {
+    pub fn new(id: MaterialId, name: &str, color: [f32; 3]) -> Material {
+        Material {
+            id,
+            name: name.to_owned(),
+            color,
+            roughness: default_roughness(),
+            metalness: 0.0,
+            specular: default_specular(),
+            transparency: 0.0,
+            ior: default_ior(),
+            emission: [1.0, 1.0, 1.0],
+            emission_strength: 0.0,
+            texture: None,
+        }
+    }
+
+    /// Values kept in range (and NaN-free).
+    pub fn sanitized(&self) -> Material {
+        let f = |v: f32, lo: f32, hi: f32, d: f32| if v.is_finite() { v.clamp(lo, hi) } else { d };
+        let c = |a: [f32; 3]| a.map(|x| f(x, 0.0, 1.0, 0.5));
+        Material {
+            id: self.id,
+            name: self.name.clone(),
+            color: c(self.color),
+            roughness: f(self.roughness, 0.0, 1.0, 0.5),
+            metalness: f(self.metalness, 0.0, 1.0, 0.0),
+            specular: f(self.specular, 0.0, 1.0, 0.5),
+            transparency: f(self.transparency, 0.0, 1.0, 0.0),
+            ior: f(self.ior, 1.0, 3.0, 1.5),
+            emission: c(self.emission),
+            emission_strength: f(self.emission_strength, 0.0, 1000.0, 0.0),
+            texture: self.texture.as_ref().map(|t| t.sanitized()),
+        }
+    }
 }
 
 /// Where a dragged object should land in the hierarchy.
@@ -466,11 +541,7 @@ impl Scene {
     pub fn add_material(&mut self, name: &str, color: [f32; 3]) -> MaterialId {
         let id = self.next_material;
         self.next_material += 1;
-        self.materials.push(Material {
-            id,
-            name: name.to_owned(),
-            color,
-        });
+        self.materials.push(Material::new(id, name, color));
         id
     }
 

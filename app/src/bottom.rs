@@ -1,6 +1,7 @@
 //! The lower panels: Materials, Asset Browser, Console and Coordinates.
 
 use crate::commands::{self, Cmd};
+use crate::host;
 use crate::fields::{NumField, parse_hex, rgb_hex};
 use crate::icons::icon_s;
 use crate::objects::rgb;
@@ -110,39 +111,157 @@ pub fn Materials() -> impl IntoView {
                     <small style="color:var(--dim)">"New"</small>
                 </div>
             </div>
-            {move || sel_color().map(|c| {
-                view! {
-                    <div class="matedit">
-                        "Colour"
-                        <input
-                            type="color"
-                            class="color"
-                            value=rgb_hex(c)
-                            on:input=move |ev| {
-                                if let Some(c) = parse_hex(&event_target_value(&ev)) {
-                                    app.gesture(|e| {
-                                        if let Some(m) = e.selected_material.and_then(|m| e.scene.material_mut(m)) {
-                                            m.color = c;
-                                        }
-                                    });
+            {move || sel_color().map(|_| view! { <MaterialEditor /> })}
+        </div>
+    }
+}
+
+/// Changes the selected material (one undo step per change).
+fn edit_material(f: impl FnOnce(&mut forma3d_core::scene::Material), label: &str) {
+    let app = app();
+    app.act(|e| {
+        if let Some(m) = e.selected_material.and_then(|m| e.scene.material_mut(m)) {
+            f(m);
+            *m = m.sanitized();
+        }
+        e.label(label);
+    });
+}
+
+/// The selected material's settings: colour and picture, how it reflects,
+/// lets light through and glows. Everything but the colour shows in final
+/// renders only.
+#[component]
+fn MaterialEditor() -> impl IntoView {
+    let app = app();
+    let mat = move || app.read(|e| e.selected_material.and_then(|m| e.scene.material(m)).cloned());
+    let num = move |label: &'static str, unit: &'static str, get: fn(&forma3d_core::scene::Material) -> f32, set: fn(&mut forma3d_core::scene::Material, f32), scale: f32| {
+        let (decimals, step) = if scale > 1.0 { (0usize, 1.0f32) } else { (2, 0.05) };
+        view! {
+            <div class="mrow">
+                <span>{label}</span>
+                <NumField
+                    value=Signal::derive(move || mat().map_or(0.0, |m| get(&m) * scale))
+                    unit=unit
+                    decimals=decimals
+                    step=step
+                    on_change=Callback::new(move |v: f32| edit_material(move |m| set(m, v / scale), label))
+                />
+            </div>
+        }
+    };
+    let color_input = move |label: &'static str, get: fn(&forma3d_core::scene::Material) -> [f32; 3], set: fn(&mut forma3d_core::scene::Material, [f32; 3])| {
+        view! {
+            <div class="mrow">
+                <span>{label}</span>
+                <input
+                    type="color"
+                    class="color"
+                    prop:value=move || mat().map_or_else(String::new, |m| rgb_hex(get(&m)))
+                    on:input=move |ev| {
+                        if let Some(c) = parse_hex(&event_target_value(&ev)) {
+                            app.gesture(|e| {
+                                if let Some(m) = e.selected_material.and_then(|m| e.scene.material_mut(m)) {
+                                    set(m, c);
                                 }
-                            }
-                            on:change=move |_| app.act(|e| e.label("Material Colour"))
-                        />
-                        <button class="btn" on:click=move |_| app.act(|e| {
-                            let sel = e.selection.clone();
-                            let m = e.selected_material;
-                            e.assign_material(&sel, m);
-                        })>"Assign to Selection"</button>
-                        <button class="btn" on:click=move |_| app.act(|e| {
-                            if let Some(m) = e.selected_material.take() {
-                                e.scene.remove_material(m);
-                                e.label("Delete Material");
-                            }
-                        })>{icon_s("trash")}"Delete"</button>
+                            });
+                        }
+                    }
+                    on:change=move |_| app.act(|e| e.label(label))
+                />
+            </div>
+        }
+    };
+    let load = move |_| {
+        leptos::task::spawn_local(async move {
+            match host::pick_bytes("image/png,image/jpeg,.png,.jpg,.jpeg").await {
+                Ok(Some((name, bytes))) => match forma3d_core::texture::Texture::from_file(&name, &bytes) {
+                    Ok(t) => {
+                        edit_material(move |m| m.texture = Some(t), "Material Picture");
+                        app.status(format!("Using {name} on the material"));
+                    }
+                    Err(e) => app.error(format!("Could not use {name}: {e}")),
+                },
+                Ok(None) => {}
+                Err(e) => app.error(format!("Could not read the picture: {e}")),
+            }
+        });
+    };
+    let projections: Vec<(String, String)> = forma3d_core::texture::Projection::ALL.iter().map(|p| (p.name().to_owned(), p.name().to_owned())).collect();
+    let texture_rows = move || {
+        let m = mat()?;
+        let t = m.texture?;
+        let projections = projections.clone();
+        Some(view! {
+            <div class="mrow">
+                <span>"Projection"</span>
+                <crate::fields::Choice
+                    options=projections
+                    value=Signal::derive(move || mat().and_then(|m| m.texture).map(|t| t.projection.name().to_owned()).unwrap_or_default())
+                    on_change=Callback::new(move |v: String| {
+                        let p = forma3d_core::texture::Projection::ALL.into_iter().find(|p| p.name() == v).unwrap_or_default();
+                        edit_material(move |m| if let Some(t) = &mut m.texture { t.projection = p }, "Texture Projection");
+                    })
+                />
+            </div>
+            <div class="mrow">
+                <span>"Tiles"</span>
+                <NumField value=Signal::derive(move || mat().and_then(|m| m.texture).map_or(1.0, |t| t.tiles[0])) decimals=2 step=0.5
+                    on_change=Callback::new(move |v: f32| edit_material(move |m| if let Some(t) = &mut m.texture { t.tiles = [v, v] }, "Texture Tiles")) />
+            </div>
+            <div class="mrow">
+                <span>"Mix"</span>
+                <NumField value=Signal::derive(move || mat().and_then(|m| m.texture).map_or(100.0, |t| t.mix * 100.0)) unit="%" decimals=0
+                    on_change=Callback::new(move |v: f32| edit_material(move |m| if let Some(t) = &mut m.texture { t.mix = v / 100.0 }, "Texture Mix")) />
+            </div>
+            <p class="hint">{format!("Picture: {}", t.name)}</p>
+        })
+    };
+    view! {
+        <div class="matedit">
+            <div class="mcol">
+                <h4>"Colour"</h4>
+                {color_input("Colour", |m| m.color, |m, c| m.color = c)}
+                <div class="mrow">
+                    <span>"Picture"</span>
+                    <div class="mbtns">
+                        <button class="btn" on:click=load>{move || if mat().is_some_and(|m| m.texture.is_some()) { "Replace..." } else { "Load..." }}</button>
+                        {move || mat().is_some_and(|m| m.texture.is_some()).then(|| view! {
+                            <button class="btn" on:click=move |_| edit_material(|m| m.texture = None, "Remove Picture")>"Remove"</button>
+                        })}
                     </div>
-                }
-            })}
+                </div>
+                {texture_rows}
+            </div>
+            <div class="mcol">
+                <h4>"Reflection"</h4>
+                {num("Roughness", "%", |m| m.roughness, |m, v| m.roughness = v, 100.0)}
+                {num("Metalness", "%", |m| m.metalness, |m, v| m.metalness = v, 100.0)}
+                {num("Specular", "%", |m| m.specular, |m, v| m.specular = v, 100.0)}
+            </div>
+            <div class="mcol">
+                <h4>"Transparency"</h4>
+                {num("Transparency", "%", |m| m.transparency, |m, v| m.transparency = v, 100.0)}
+                {num("Refraction (IOR)", "", |m| m.ior, |m, v| m.ior = v, 1.0)}
+                <h4>"Glow"</h4>
+                {color_input("Emission", |m| m.emission, |m, c| m.emission = c)}
+                {num("Strength", "", |m| m.emission_strength, |m, v| m.emission_strength = v, 1.0)}
+            </div>
+            <div class="mcol mactions">
+                <button class="btn" on:click=move |_| app.act(|e| {
+                    let sel = e.selection.clone();
+                    let m = e.selected_material;
+                    e.assign_material(&sel, m);
+                })>"Assign to Selection"</button>
+                <button class="btn" on:click=move |_| commands::run(app, Cmd::SaveMaterialAsset)>"Save to Assets"</button>
+                <button class="btn" on:click=move |_| app.act(|e| {
+                    if let Some(m) = e.selected_material.take() {
+                        e.scene.remove_material(m);
+                        e.label("Delete Material");
+                    }
+                })>{icon_s("trash")}"Delete"</button>
+                <p class="hint">"Reflection, transparency, glow and pictures show in renders (Render menu)."</p>
+            </div>
         </div>
     }
 }
@@ -160,8 +279,9 @@ pub fn Assets() -> impl IntoView {
         builtins.with_value(|b| v.extend(b.iter().cloned().map(|a| (None, a))));
         v
     };
-    let insert = move |a: forma3d_core::assets::Asset| {
+    let insert = move |user: Option<usize>, a: forma3d_core::assets::Asset| {
         let name = a.name.clone();
+        let look = user.and_then(|i| app.user_assets.with_untracked(|u| u.get(i).and_then(|s| s.look.clone())));
         app.act(|e| match a.content {
             Content::Scene(s) => {
                 let ids = e.paste(&s);
@@ -169,6 +289,9 @@ pub fn Assets() -> impl IntoView {
             }
             Content::Material(c) => {
                 let m = e.scene.add_material(&name, c);
+                if let (Some(look), Some(mat)) = (look, e.scene.material_mut(m)) {
+                    *mat = forma3d_core::scene::Material { id: m, name: name.clone(), ..look };
+                }
                 e.selected_material = Some(m);
                 if !e.selection.is_empty() {
                     let sel = e.selection.clone();
@@ -232,7 +355,7 @@ pub fn Assets() -> impl IntoView {
             });
             out.push(
                 view! {
-                    <div class="asset" class:mine=mine title=tip on:click=move |_| insert(a.clone())>
+                    <div class="asset" class:mine=mine title=tip on:click=move |_| insert(user, a.clone())>
                         {match mat {
                             Some(c) => view! { <div class="sw" style=ball(c)></div> }.into_any(),
                             None => crate::icons::icon(ic).into_any(),

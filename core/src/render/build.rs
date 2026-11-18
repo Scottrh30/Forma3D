@@ -57,6 +57,33 @@ pub struct RObject {
     /// Linear colour (working space).
     pub color: Vec3,
     pub material: Option<u64>,
+    pub surface: SurfaceLook,
+    /// World → the object's own space, and its normals the same way (for
+    /// texture projections), and its box there.
+    pub to_local: glam::Mat4,
+    pub normal_to_local: Mat3,
+    pub lo: Vec3,
+    pub hi: Vec3,
+}
+
+/// How a material looks in a render.
+#[derive(Clone, Debug)]
+pub struct SurfaceLook {
+    pub roughness: f32,
+    pub metalness: f32,
+    /// Reflectance at normal incidence for a dielectric (0.04 by default).
+    pub f0: f32,
+    pub transparency: f32,
+    pub ior: f32,
+    /// Light given off (working space, strength included).
+    pub emission: Vec3,
+    pub texture: Option<(std::sync::Arc<crate::texture::Image>, crate::texture::Texture)>,
+}
+
+impl SurfaceLook {
+    pub fn plain() -> SurfaceLook {
+        SurfaceLook { roughness: 0.5, metalness: 0.0, f0: 0.04, transparency: 0.0, ior: 1.5, emission: Vec3::ZERO, texture: None }
+    }
 }
 
 pub struct RenderScene {
@@ -112,6 +139,8 @@ pub fn build_scene(ed: &mut crate::editor::Editor, settings: &RenderSettings, fr
 
     let mut tris = Vec::new();
     let mut robjects = Vec::with_capacity(objects.len());
+    // Each material's picture, decoded once.
+    let mut images: std::collections::HashMap<u64, Option<std::sync::Arc<crate::texture::Image>>> = std::collections::HashMap::new();
     for (index, o) in objects.iter().enumerate() {
         let normal_m = o.world.inverse().transpose();
         let m = &o.mesh;
@@ -129,7 +158,40 @@ pub fn build_scene(ed: &mut crate::editor::Editor, settings: &RenderSettings, fr
             tris.push(Tri::new(p, [nor[a], nor[b], nor[c]], index as u32));
         }
         let base = if settings.material_override { settings.override_color } else { o.color };
-        robjects.push(RObject { id: o.id, color: to_working(srgb_to_linear(base), w), material: scene.get(o.id).and_then(|x| x.material) });
+        let mat = o.material.and_then(|m| scene.material(m)).map(|m| m.sanitized());
+        let surface = match (&mat, settings.material_override) {
+            (Some(m), false) => SurfaceLook {
+                roughness: m.roughness,
+                metalness: m.metalness,
+                f0: 0.08 * m.specular,
+                transparency: m.transparency,
+                ior: m.ior,
+                emission: to_working(srgb_to_linear(m.emission) * m.emission_strength, w),
+                texture: m.texture.as_ref().and_then(|t| {
+                    let img = images.entry(m.id).or_insert_with(|| t.image().ok().map(std::sync::Arc::new)).clone()?;
+                    Some((img, t.clone()))
+                }),
+            },
+            _ => SurfaceLook::plain(),
+        };
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for v in &m.vertices {
+            lo = lo.min(Vec3::from(v.pos));
+            hi = hi.max(Vec3::from(v.pos));
+        }
+        if lo.x > hi.x {
+            (lo, hi) = (Vec3::splat(-1.0), Vec3::splat(1.0));
+        }
+        robjects.push(RObject {
+            id: o.id,
+            color: to_working(srgb_to_linear(base), w),
+            material: o.material,
+            surface,
+            to_local: o.world.inverse(),
+            normal_to_local: Mat3::from_mat4(o.world).transpose(),
+            lo,
+            hi,
+        });
     }
 
     // Lights and the sky.

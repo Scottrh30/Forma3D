@@ -201,7 +201,13 @@ select.sel { height: 26px; border-radius: 6px; background: var(--bg3); border: 1
 .mat input { width: 70px; height: 18px; font-size: 11px; background: var(--bg3); border: 1px solid var(--accent); border-radius: 4px; color: #fff; outline: none; text-align: center; }
 .add { width: 52px; height: 52px; border-radius: 50%; border: 1.5px dashed #4a4f58; display: grid; place-items: center; color: var(--dim); font-size: 20px; }
 .add:hover { border-color: var(--accent); color: var(--accent); }
-.matedit { display: flex; align-items: center; gap: 10px; padding: 0 14px 12px; color: var(--dim); }
+.matedit { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px 18px; padding: 4px 14px 12px; color: var(--dim); }
+.matedit h4 { font: 600 11px Inter; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 6px 0 2px; }
+.mcol { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.mrow { display: grid; grid-template-columns: 96px 1fr; align-items: center; gap: 8px; }
+.mbtns { display: flex; gap: 6px; }
+.mactions { justify-content: flex-start; gap: 6px; padding-top: 22px; }
+.mactions .btn { justify-content: center; }
 .coords { padding: 12px 14px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; }
 .coords h4 { font: 600 11px Inter; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
 .coordsfoot { grid-column: 1 / 4; display: flex; gap: 8px; margin-top: 4px; align-items: center; }

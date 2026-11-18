@@ -30,4 +30,5 @@ pub mod sky;
 pub mod snap;
 pub mod spline;
 pub mod takes;
+pub mod texture;
 pub mod tessellate;

@@ -300,6 +300,8 @@ pub struct RenderObject {
     pub world: Mat4,
     pub mesh: Arc<Mesh>,
     pub color: [f32; 3],
+    /// The material it shows (its own, or the one it takes from its inputs).
+    pub material: Option<crate::scene::MaterialId>,
     pub selection: SelectionState,
     pub kind: ItemKind,
     /// A spline: picked along its line rather than at its origin.
@@ -1620,6 +1622,7 @@ impl Editor {
                 world,
                 mesh,
                 color,
+                material: if light_color.is_some() { None } else { material },
                 selection,
                 kind,
                 curve: matches!(o.kind, ObjectKind::Spline(_) | ObjectKind::Light(_) | ObjectKind::Camera(_) | ObjectKind::Sky(_)),

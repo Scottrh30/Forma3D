@@ -2119,13 +2119,13 @@ pub fn save_selection_asset(app: App) {
 
 /// Saves the selected material's colour to the Asset Browser.
 pub fn save_material_asset(app: App) {
-    let picked = app.peek(|e| e.selected_material.and_then(|m| e.scene.material(m)).map(|m| (m.name.clone(), m.color)));
-    let Some((base, color)) = picked else {
+    let picked = app.peek(|e| e.selected_material.and_then(|m| e.scene.material(m)).map(|m| (m.name.clone(), m.clone())));
+    let Some((base, look)) = picked else {
         app.status("Select a material first");
         return;
     };
     let name = app.user_assets.with_untracked(|a| crate::assets::unique_name(&base, a));
-    app.user_assets.update(|a| a.push(crate::assets::Saved::material(&name, color)));
+    app.user_assets.update(|a| a.push(crate::assets::Saved::material(&name, &look)));
     crate::settings::save_assets(app);
     app.show_panel(crate::workspace::Panel::Assets);
     app.status(format!("Saved material \"{name}\" to the Asset Browser"));

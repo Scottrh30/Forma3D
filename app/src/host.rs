@@ -378,6 +378,29 @@ pub async fn upload() -> Result<Option<Opened>, String> {
     }))
 }
 
+/// Lets the user pick a file; its name and bytes, or None when cancelled.
+pub async fn pick_bytes(accept: &str) -> Result<Option<(String, Vec<u8>)>, String> {
+    let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
+    let input: web_sys::HtmlInputElement = doc.create_element("input").map_err(js_err)?.dyn_into().map_err(|_| "no input")?;
+    input.set_type("file");
+    input.set_accept(accept);
+    let (tx, rx) = futures_channel();
+    let tx = std::rc::Rc::new(std::cell::RefCell::new(Some(tx)));
+    let input2 = input.clone();
+    let on_change = Closure::<dyn FnMut()>::new(move || {
+        if let Some(tx) = tx.borrow_mut().take() {
+            let _ = tx.call1(&JsValue::NULL, &input2.files().and_then(|f| f.get(0)).map(JsValue::from).unwrap_or(JsValue::NULL));
+        }
+    });
+    input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
+    input.click();
+    let file = JsFuture::from(rx).await.map_err(js_err)?;
+    drop(on_change);
+    let Ok(file) = file.dyn_into::<web_sys::File>() else { return Ok(None) };
+    let buf = JsFuture::from(file.array_buffer()).await.map_err(js_err)?;
+    Ok(Some((file.name(), js_sys::Uint8Array::new(&buf).to_vec())))
+}
+
 /// A promise and the function that resolves it.
 fn futures_channel() -> (Function, Promise) {
     let mut resolve: Option<Function> = None;
