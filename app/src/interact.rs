@@ -125,7 +125,11 @@ pub fn draw_gizmo(
 
 /// The view's name and modes, the axis compass and the border.
 pub fn view_chrome(p: &mut Painter, ed: &Editor, v: &View, active: bool, quad: bool) {
-    if ed.view_opts.compass {
+    let panel = ed.panel(v.slot);
+    if panel.safe_frames {
+        safe_frames(p, ed, v);
+    }
+    if panel.compass {
         let c = Vec2::new(40.0, v.size.y - 40.0);
         let cam = &v.cam;
         let mut axes: Vec<(f32, usize, Vec2)> = (0..3)
@@ -181,6 +185,58 @@ pub fn view_chrome(p: &mut Painter, ed: &Editor, v: &View, active: bool, quad: b
     }
 }
 
+/// Safe Frames: the part of the view a render shows (the rest dimmed), with
+/// the action safe (90 %) and title safe (80 %) areas inside it.
+fn safe_frames(p: &mut Painter, ed: &Editor, v: &View) {
+    let rs = &ed.scene.render;
+    let ratio = rs.width.max(1) as f32 / rs.height.max(1) as f32;
+    // Through a camera object the render keeps its horizontal angle; from
+    // an editor view, the vertical one.
+    let through = ed.look_through.is_some() && v.slot == forma3d_core::camera::ViewKind::Perspective;
+    let (w, h) = frame_size(v.size, ratio, through);
+    let lo = (v.size - Vec2::new(w, h)) * 0.5;
+    let hi = lo + Vec2::new(w, h);
+    let dim = "rgba(0,0,0,0.42)";
+    // Dim what falls outside the render.
+    if lo.x > 0.5 {
+        p.rect(Vec2::ZERO, Vec2::new(lo.x, v.size.y), dim, "none");
+        p.rect(Vec2::new(hi.x, 0.0), v.size, dim, "none");
+    }
+    if lo.y > 0.5 {
+        p.rect(Vec2::new(lo.x.max(0.0), 0.0), Vec2::new(hi.x.min(v.size.x), lo.y), dim, "none");
+        p.rect(Vec2::new(lo.x.max(0.0), hi.y), Vec2::new(hi.x.min(v.size.x), v.size.y), dim, "none");
+    }
+    let (flo, fhi) = (lo.max(Vec2::splat(0.5)), hi.min(v.size - Vec2::splat(0.5)));
+    p.rect(flo, fhi, "none", "rgba(255,255,255,0.55)");
+    for (k, label) in [(0.9, "Action safe"), (0.8, "Title safe")] {
+        let inset = Vec2::new(w, h) * (1.0 - k) * 0.5;
+        let (a, b) = (lo + inset, hi - inset);
+        let _ = std::fmt::Write::write_fmt(
+            &mut p.svg,
+            format_args!(
+                r#"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" fill="none" stroke="rgba(255,255,255,0.28)" stroke-width="1" stroke-dasharray="4 4"><title>{label}</title></rect>"#,
+                a.x,
+                a.y,
+                b.x - a.x,
+                b.y - a.y
+            ),
+        );
+    }
+    p.text(Vec2::new(fhi.x - 6.0, fhi.y - 18.0), Anchor::RightTop, &format!("{} × {}", rs.width, rs.height), 11.0, "rgba(255,255,255,0.6)");
+}
+
+/// The render frame for a picture `ratio` wide (width / height) in a view
+/// `size`: as wide as the view when the render keeps the horizontal angle
+/// (`horizontal`), otherwise as tall. It can reach past the view's edges.
+pub fn frame_size(size: Vec2, ratio: f32, horizontal: bool) -> (f32, f32) {
+    let ratio = ratio.max(1e-3);
+    if horizontal {
+        (size.x, size.x / ratio)
+    } else {
+        (size.y * ratio, size.y)
+    }
+}
+
 /// Model, Object and Workplane modes: the gizmo, Tweak, picking and snapping.
 pub fn object_mode(
     ed: &mut Editor,
@@ -190,7 +246,8 @@ pub fn object_mode(
     snap: &SnapCtx,
     p: &mut Painter,
 ) {
-    let kind = v.kind;
+    // The panel (tools remember which one they started in).
+    let kind = v.slot;
     let cam = v.cam;
     let mods = inp.mods;
     let project = |q: Vec3| v.project(q);
@@ -354,7 +411,7 @@ pub fn object_mode(
                     let q = snap_query(
                         &ed.scene,
                         &cam,
-                        kind,
+                        v.kind,
                         &project,
                         m,
                         ray,

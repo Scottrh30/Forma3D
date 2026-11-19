@@ -396,8 +396,11 @@ impl Light {
     }
 }
 
-/// Up to this many lights reach the shader (the first casts shadows).
+/// Up to this many lights reach the shader.
 pub const MAX_LIGHTS: usize = 8;
+/// Up to this many of them cast shadows in the viewport (the brightest
+/// shadow-casting lights).
+pub const MAX_SHADOWS: usize = 4;
 
 /// One light as the shader sees it.
 #[repr(C)]
@@ -409,9 +412,43 @@ pub struct LightRaw {
     pub dir: [f32; 4],
     /// rgb: colour times intensity; w: cosine of the inner cone angle.
     pub color: [f32; 4],
-    /// x: falloff radius (0 = none); y: area half-size (softening);
-    /// z: 1 when it casts shadows; w unused.
+    /// x: falloff radius (0 = none); y: shadow softness (world units, or
+    /// radians for directional lights); z: 1 when it casts shadows; w: its
+    /// shadow map + 1 (0: none), set by the renderer.
     pub params: [f32; 4],
+    /// Area lights: xyz the rectangle's half-width axis; w its half height.
+    pub axis: [f32; 4],
+}
+
+impl LightRaw {
+    pub fn kind(&self) -> f32 {
+        self.pos[3]
+    }
+
+    pub fn position(&self) -> Vec3 {
+        Vec3::new(self.pos[0], self.pos[1], self.pos[2])
+    }
+
+    /// The direction the light travels.
+    pub fn direction(&self) -> Vec3 {
+        Vec3::new(self.dir[0], self.dir[1], self.dir[2])
+    }
+
+    pub fn directional(&self) -> bool {
+        self.pos[3] > 2.5
+    }
+
+    pub fn casts_shadows(&self) -> bool {
+        self.params[2] > 0.5
+    }
+
+    /// The area rectangle's corners (centre ± half axes), for area lights.
+    pub fn area_corners(&self) -> [Vec3; 4] {
+        let c = self.position();
+        let x = Vec3::new(self.axis[0], self.axis[1], self.axis[2]);
+        let y = self.direction().cross(x).normalize_or_zero() * self.axis[3];
+        [c - x - y, c + x - y, c + x + y, c - x + y]
+    }
 }
 
 /// The scene's lights for the viewport: direct lights (shadow caster first)
@@ -457,29 +494,50 @@ impl SceneLights {
                 LightKind::Infinite | LightKind::Sun | LightKind::Parallel => 3.0,
                 _ => 0.0,
             };
+            let area = l.kind == LightKind::Area;
+            let x_axis = world.transform_vector3(Vec3::X).normalize_or(Vec3::X) * l.size[0] * 0.5;
+            let softness = if l.directional() {
+                (l.shadow_softness / 1000.0).min(0.5)
+            } else if area {
+                (l.size[0] + l.size[1]) * 0.25
+            } else {
+                l.shadow_softness * 0.5
+            };
             let raw = LightRaw {
                 pos: [pos.x, pos.y, pos.z, kind],
                 dir: [dir.x, dir.y, dir.z, l.outer_angle.to_radians().cos()],
                 color: [color.x, color.y, color.z, l.inner_angle.to_radians().cos()],
                 params: [
                     if l.falloff && !l.directional() { l.radius } else { 0.0 },
-                    if l.kind == LightKind::Area { (l.size[0] + l.size[1]) * 0.25 } else { 0.0 },
+                    softness,
                     if l.shadows { 1.0 } else { 0.0 },
                     0.0,
                 ],
+                axis: if area { [x_axis.x, x_axis.y, x_axis.z, l.size[1] * 0.5] } else { [0.0; 4] },
             };
             let brightness = color.x + color.y + color.z;
             direct.push((l.shadows, brightness, raw));
         }
-        // The brightest shadow-casting light goes first: it casts the shadows.
+        // The brightest shadow-casting lights go first: they get the
+        // viewport's shadow maps.
         direct.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)));
         out.lights = direct.into_iter().take(MAX_LIGHTS).map(|d| d.2).collect();
+        for (i, l) in out.lights.iter_mut().take(MAX_SHADOWS).enumerate() {
+            if l.casts_shadows() {
+                l.params[3] = i as f32 + 1.0;
+            }
+        }
         out.ambient = ambient.to_array();
         out
     }
 
-    /// Direction towards the shadow-casting light from the middle of the
-    /// scene, if one casts shadows.
+    /// The lights with a viewport shadow map, in shadow-map order.
+    pub fn shadow_casters(&self) -> impl Iterator<Item = (usize, &LightRaw)> {
+        self.lights.iter().enumerate().filter(|(_, l)| l.params[3] > 0.5)
+    }
+
+    /// Direction towards the brightest shadow-casting light from the middle
+    /// of the scene, if one casts shadows.
     pub fn shadow_direction(&self, scene_centre: Vec3) -> Option<Vec3> {
         let l = self.lights.first().filter(|l| l.params[2] > 0.5)?;
         let to_light = if l.pos[3] == 3.0 {
@@ -553,6 +611,34 @@ mod tests {
         // With no light casting shadows there is no shadow direction.
         assert_eq!(SceneLights::gather([(&no_shadow, at)]).shadow_direction(Vec3::ZERO), None);
         assert!(!SceneLights::gather([]).any);
+    }
+
+    #[test]
+    fn up_to_four_lights_get_shadow_maps() {
+        let at = Mat4::from_translation(Vec3::new(0.0, 300.0, 0.0));
+        let lights: Vec<Light> = (0..6)
+            .map(|i| Light { intensity: 50.0 + i as f32 * 10.0, ..LightKind::Omni.default_light() })
+            .chain([Light { shadows: false, ..LightKind::Point.default_light() }])
+            .collect();
+        let lit = SceneLights::gather(lights.iter().map(|l| (l, at)));
+        assert_eq!(lit.shadow_casters().count(), MAX_SHADOWS);
+        let slots: Vec<f32> = lit.shadow_casters().map(|(_, l)| l.params[3]).collect();
+        assert_eq!(slots, [1.0, 2.0, 3.0, 4.0]);
+        // The brightest casters get the maps.
+        assert!(lit.lights[0].color[0] > lit.lights[3].color[0]);
+        assert!(lit.lights.iter().skip(MAX_SHADOWS).all(|l| l.params[3] == 0.0));
+    }
+
+    #[test]
+    fn area_lights_carry_their_rectangle() {
+        let mut area = LightKind::Area.default_light();
+        area.size = [200.0, 100.0];
+        let lit = SceneLights::gather([(&area, Mat4::IDENTITY)]);
+        let c = lit.lights[0].area_corners();
+        assert!((c[0] - c[1]).length() - 200.0 < 1e-3);
+        assert!(((c[1] - c[2]).length() - 100.0).abs() < 1e-3);
+        // The rectangle is perpendicular to the direction the light shines.
+        assert!((c[1] - c[0]).dot(lit.lights[0].direction()).abs() < 1e-3);
     }
 
     #[test]

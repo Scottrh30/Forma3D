@@ -895,14 +895,25 @@ impl Scene {
     // --- persistence ------------------------------------------------------
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        self.to_json_with(None)
+    }
+
+    /// The scene file, with the view panels saved alongside.
+    pub fn to_json_with(&self, views: Option<&crate::views::SavedViews>) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(&SceneFile {
             format: FORMAT_NAME.to_owned(),
             version: FORMAT_VERSION,
             scene: self.clone(),
+            views: views.and_then(|v| serde_json::to_value(v).ok()),
         })
     }
 
     pub fn from_json(text: &str) -> Result<Scene, String> {
+        Ok(Self::from_json_with(text)?.0)
+    }
+
+    /// The scene and, if the file has them, its saved view panels.
+    pub fn from_json_with(text: &str) -> Result<(Scene, Option<crate::views::SavedViews>), String> {
         let file: SceneFile = serde_json::from_str(text).map_err(|e| e.to_string())?;
         if file.format != FORMAT_NAME {
             return Err(format!("not a Forma3D scene (format \"{}\")", file.format));
@@ -913,7 +924,11 @@ impl Scene {
                 file.version, FORMAT_VERSION
             ));
         }
-        file.scene.validated()
+        let views = file
+            .views
+            .and_then(|v| serde_json::from_value::<crate::views::SavedViews>(v).ok())
+            .map(crate::views::SavedViews::sanitized);
+        Ok((file.scene.validated()?, views))
     }
 
     /// Rejects files whose hierarchy is inconsistent, rather than crashing later.
@@ -1244,6 +1259,10 @@ struct SceneFile {
     format: String,
     version: u32,
     scene: Scene,
+    /// The view panels as they were when saved (layouts, cameras, options).
+    /// Read loosely: views that don't parse are dropped, not the scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    views: Option<serde_json::Value>,
 }
 
 #[cfg(test)]

@@ -12,7 +12,8 @@ struct Post {
     params: vec4<f32>,
     // width, height, 1 / width, 1 / height
     size: vec4<f32>,
-    // x: 1 for orthographic views, y: sign of view-space depth
+    // x: 1 for orthographic views, y: sign of view-space depth,
+    // z: screen-space reflections on
     misc: vec4<f32>,
 };
 
@@ -64,17 +65,10 @@ fn hash(p: vec2<f32>) -> f32 {
     return fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
 }
 
-@fragment
-fn fs_ssao(in: FsIn) -> @location(0) vec4<f32> {
-    let px = vec2<i32>(in.pos.xy);
-    let d = load_depth(px);
-    if (d >= 1.0) {
-        return vec4<f32>(1.0);
-    }
-    let p = view_pos(px, d);
-
-    // Normal from the neighbour on whichever side is closer in depth, so
-    // silhouettes don't smear.
+// View-space normal at pixel `px` (position `p`), from the neighbour on
+// whichever side is closer in depth, so silhouettes don't smear. It faces the
+// camera.
+fn view_normal(px: vec2<i32>, p: vec3<f32>) -> vec3<f32> {
     let pr = view_pos(px + vec2<i32>(1, 0), load_depth(px + vec2<i32>(1, 0)));
     let pl = view_pos(px - vec2<i32>(1, 0), load_depth(px - vec2<i32>(1, 0)));
     let pd = view_pos(px + vec2<i32>(0, 1), load_depth(px + vec2<i32>(0, 1)));
@@ -88,13 +82,112 @@ fn fs_ssao(in: FsIn) -> @location(0) vec4<f32> {
         dy = p - pu;
     }
     var n = normalize(cross(dx, dy));
-    var to_cam = -normalize(p);
-    if (post.misc.x > 0.5) {
-        to_cam = vec3<f32>(0.0, 0.0, -post.misc.y);
-    }
-    if (dot(n, to_cam) < 0.0) {
+    if (dot(n, -view_dir(p)) < 0.0) {
         n = -n;
     }
+    return n;
+}
+
+// Direction from the camera through view-space point `p`.
+fn view_dir(p: vec3<f32>) -> vec3<f32> {
+    if (post.misc.x > 0.5) {
+        return vec3<f32>(0.0, 0.0, post.misc.y);
+    }
+    return normalize(p);
+}
+
+// Pixel coordinates of view-space point `s`, or -1 off screen.
+fn to_screen(s: vec3<f32>) -> vec2<f32> {
+    let clip = post.proj * vec4<f32>(s, 1.0);
+    if (clip.w <= 0.0) {
+        return vec2<f32>(-1.0);
+    }
+    let ndc = clip.xy / clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return vec2<f32>(-1.0);
+    }
+    return uv;
+}
+
+// Screen-space reflection at pixel `px`: marches the mirror ray through the
+// depth buffer. rgb: what it hits (premultiplied), a: how strongly to show it.
+fn ssr(px: vec2<i32>, frag: vec2<f32>) -> vec4<f32> {
+    let d = load_depth(px);
+    if (d >= 1.0) {
+        return vec4<f32>(0.0);
+    }
+    let p = view_pos(px, d);
+    let n = view_normal(px, p);
+    let v = view_dir(p);
+    let r = reflect(v, n);
+    let ndv = clamp(dot(n, -v), 0.0, 1.0);
+    let fresnel = 0.04 + 0.96 * pow(1.0 - ndv, 5.0);
+    // The longest reach: about the scene's size on screen.
+    let reach = post.params.x / 0.045 * 1.2;
+    let steps = 40;
+    let step_len = reach / f32(steps);
+    let start = p + n * step_len * 0.2;
+    var t = step_len * (0.5 + hash(frag));
+    var hit_uv = vec2<f32>(-1.0);
+    var prev = 0.0;
+    for (var i = 0; i < steps; i = i + 1) {
+        let s = start + r * t;
+        let uv = to_screen(s);
+        if (uv.x < 0.0) {
+            break;
+        }
+        let sp = vec2<i32>(uv * vec2<f32>(texel_count()));
+        let sd = load_depth(sp);
+        if (sd < 1.0) {
+            let behind = ahead(s) - ahead(view_pos(sp, sd));
+            if (behind > 0.0 && behind < step_len * 2.5) {
+                // Refine between the last two steps.
+                var lo = prev;
+                var hi = t;
+                for (var k = 0; k < 5; k = k + 1) {
+                    let mid = (lo + hi) * 0.5;
+                    let m = start + r * mid;
+                    let muv = to_screen(m);
+                    if (muv.x < 0.0) {
+                        break;
+                    }
+                    let mp = vec2<i32>(muv * vec2<f32>(texel_count()));
+                    let md = load_depth(mp);
+                    if (ahead(m) > ahead(view_pos(mp, md))) {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                    }
+                }
+                hit_uv = to_screen(start + r * hi);
+                t = hi;
+                break;
+            }
+        }
+        prev = t;
+        t = t + step_len * (1.0 + f32(i) * 0.04);
+    }
+    if (hit_uv.x < 0.0) {
+        return vec4<f32>(0.0);
+    }
+    let hit = textureSampleLevel(color_tex, lin, hit_uv, 0.0);
+    // Fade towards the screen's edges and the end of the ray.
+    let edge = min(min(hit_uv.x, 1.0 - hit_uv.x), min(hit_uv.y, 1.0 - hit_uv.y));
+    let fade = smoothstep(0.0, 0.08, edge) * (1.0 - smoothstep(0.6, 1.0, t / (reach * 1.8)));
+    return vec4<f32>(hit.rgb, clamp(0.12 + 0.6 * fresnel, 0.0, 0.7) * fade * hit.a);
+}
+
+@fragment
+fn fs_ssao(in: FsIn) -> @location(0) vec4<f32> {
+    let px = vec2<i32>(in.pos.xy);
+    let d = load_depth(px);
+    if (d >= 1.0) {
+        return vec4<f32>(1.0);
+    }
+    let p = view_pos(px, d);
+
+    let n = view_normal(px, p);
 
     // A randomly rotated tangent frame per pixel.
     let angle = hash(in.pos.xy) * 6.2831853;
@@ -223,6 +316,19 @@ fn fs_composite(in: FsIn) -> @location(0) vec4<f32> {
         // "over" with a darkening of ao, as for the vignette below.
         let ao = blurred_ao(px);
         c = vec4<f32>(c.rgb * ao, 1.0 - (1.0 - c.a) * ao);
+    }
+    if (post.misc.z > 0.5) {
+        let r = ssr(px, in.pos.xy);
+        if (r.a > 0.0) {
+            if (c.a > 0.5) {
+                // On objects: mix the reflection over the shaded surface.
+                c = vec4<f32>(mix(c.rgb, r.rgb * c.a, r.a), c.a);
+            } else {
+                // On the floor: a faint mirror image over the background.
+                let k = r.a * 0.45;
+                c = vec4<f32>(c.rgb + r.rgb * k, c.a + (1.0 - c.a) * k);
+            }
+        }
     }
     if (!post_on) {
         return c;

@@ -22,7 +22,7 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MAX_GRID_VERTICES: usize = 16_384;
 const INITIAL_INSTANCES: usize = 256;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum DisplayMode {
     /// Smooth shaded faces; only selected objects show their edges.
     Gouraud,
@@ -109,16 +109,18 @@ pub enum ViewFx {
     Tessellation,
     Shadows,
     Reflections,
+    Ssr,
     Ssao,
     BackfaceCulling,
 }
 
 impl ViewFx {
-    pub const ALL: [ViewFx; 6] = [
+    pub const ALL: [ViewFx; 7] = [
         ViewFx::PostEffects,
         ViewFx::Tessellation,
         ViewFx::Shadows,
         ViewFx::Reflections,
+        ViewFx::Ssr,
         ViewFx::Ssao,
         ViewFx::BackfaceCulling,
     ];
@@ -129,6 +131,7 @@ impl ViewFx {
             ViewFx::Tessellation => "Tessellation",
             ViewFx::Shadows => "Shadows",
             ViewFx::Reflections => "Reflections",
+            ViewFx::Ssr => "Screen-Space Reflections",
             ViewFx::Ssao => "SSAO",
             ViewFx::BackfaceCulling => "Backface Culling",
         }
@@ -141,6 +144,7 @@ impl ViewFx {
             ViewFx::Tessellation => "tessellation",
             ViewFx::Shadows => "shadows",
             ViewFx::Reflections => "reflections",
+            ViewFx::Ssr => "ssr",
             ViewFx::Ssao => "ssao",
             ViewFx::BackfaceCulling => "backface_culling",
         }
@@ -153,19 +157,22 @@ impl ViewFx {
             ViewFx::Tessellation => "smooth subdivide phong",
             ViewFx::Shadows => "shadow map light",
             ViewFx::Reflections => "environment fresnel gloss",
+            ViewFx::Ssr => "ssr mirror reflections objects floor",
             ViewFx::Ssao => "ambient occlusion ao",
             ViewFx::BackfaceCulling => "back faces normals cull",
         }
     }
 }
 
-/// Which render options are on. They apply to every view.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Which render options are on (each view has its own).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ViewEffects {
     pub post_effects: bool,
     pub tessellation: bool,
     pub shadows: bool,
     pub reflections: bool,
+    #[serde(default)]
+    pub ssr: bool,
     pub ssao: bool,
     pub backface_culling: bool,
 }
@@ -177,6 +184,7 @@ impl ViewEffects {
             ViewFx::Tessellation => self.tessellation,
             ViewFx::Shadows => self.shadows,
             ViewFx::Reflections => self.reflections,
+            ViewFx::Ssr => self.ssr,
             ViewFx::Ssao => self.ssao,
             ViewFx::BackfaceCulling => self.backface_culling,
         }
@@ -188,15 +196,17 @@ impl ViewEffects {
             ViewFx::Tessellation => &mut self.tessellation,
             ViewFx::Shadows => &mut self.shadows,
             ViewFx::Reflections => &mut self.reflections,
+            ViewFx::Ssr => &mut self.ssr,
             ViewFx::Ssao => &mut self.ssao,
             ViewFx::BackfaceCulling => &mut self.backface_culling,
         };
         *flag = !*flag;
     }
 
-    /// SSAO and post effects need the view rendered offscreen first.
+    /// SSAO, screen-space reflections and post effects need the view
+    /// rendered offscreen first.
     pub fn offscreen(&self) -> bool {
-        self.ssao || self.post_effects
+        self.ssao || self.ssr || self.post_effects
     }
 }
 
@@ -209,16 +219,41 @@ pub struct CameraUniform {
     light_dir: [f32; 4],
     params: [f32; 4],
     fade: [f32; 4],
-    light_view_proj: [[f32; 4]; 4],
-    /// x: shadows, y: reflections, z: shadow texel size in world units,
+    /// The shadow map the shadow pass is drawing (a copy of the uniform per
+    /// shadow map sets it).
+    shadow_draw: [[f32; 4]; 4],
+    /// x: number of shadow maps, y: reflections, z: unused,
     /// w: the floor plane (y = 0) is shown.
     fx: [f32; 4],
     /// rgb: ambient light from Dome lights (and the Sun's sky); w: 1 when
     /// the scene's lights replace the default camera light.
     ambient: [f32; 4],
-    /// x: number of direct lights in `lights`.
+    /// x: number of direct lights in `lights`; y: 1 when no light casts shadows.
     light_count: [f32; 4],
     lights: [crate::light::LightRaw; crate::light::MAX_LIGHTS],
+    /// World -> shadow clip space, per shadow map.
+    shadow_mats: [[[f32; 4]; 4]; MAX_SHADOWS],
+    /// Where each shadow map sits in the atlas: uv offset (xy) and size (zw).
+    shadow_rects: [[f32; 4]; MAX_SHADOWS],
+    /// x: world size of a texel (at unit distance for perspective maps),
+    /// y: 1 for a perspective map, z: blur radius in texels, w: index of
+    /// the light (-1: the default camera light).
+    shadow_info: [[f32; 4]; MAX_SHADOWS],
+}
+
+pub use crate::light::MAX_SHADOWS;
+
+/// One shadow map: the light's view of the scene.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShadowPlan {
+    pub matrix: Mat4,
+    pub perspective: bool,
+    /// World size the whole map spans: absolute for orthographic maps, per
+    /// unit of distance from the light for perspective ones.
+    pub texel: f32,
+    /// Blur radius in texels of a full-size map (soft shadows from large or
+    /// soft lights).
+    pub blur: f32,
 }
 
 impl CameraUniform {
@@ -233,11 +268,14 @@ impl CameraUniform {
             light_dir: [light.x, light.y, light.z, 0.0],
             params: [if target_is_srgb { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
             fade: [fade_center.x, fade_center.y, fade_center.z, fade_radius],
-            light_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            shadow_draw: Mat4::IDENTITY.to_cols_array_2d(),
             fx: [0.0; 4],
             ambient: [0.0; 4],
             light_count: [0.0; 4],
             lights: [crate::light::LightRaw::default(); crate::light::MAX_LIGHTS],
+            shadow_mats: [Mat4::IDENTITY.to_cols_array_2d(); MAX_SHADOWS],
+            shadow_rects: [[0.0; 4]; MAX_SHADOWS],
+            shadow_info: [[0.0; 4]; MAX_SHADOWS],
         }
     }
 
@@ -251,6 +289,7 @@ impl CameraUniform {
     pub fn set_effects(&mut self, fx: ViewEffects, bounds: Option<(Vec3, Vec3)>, floor: bool) {
         self.fx[1] = if fx.reflections { 1.0 } else { 0.0 };
         self.fx[3] = if floor { 1.0 } else { 0.0 };
+        self.fx[0] = 0.0;
         let no_caster = self.light_count[1] > 0.5;
         let Some((mut lo, mut hi)) = bounds.filter(|_| fx.shadows && !no_caster) else {
             return;
@@ -259,11 +298,41 @@ impl CameraUniform {
             lo.y = lo.y.min(0.0);
             hi.y = hi.y.max(0.0);
         }
-        let light = Vec3::from_slice(&self.light_dir[..3]);
-        let (matrix, radius) = shadow_matrix(light, lo, hi);
-        self.light_view_proj = matrix.to_cols_array_2d();
-        self.fx[0] = 1.0;
-        self.fx[2] = 2.0 * radius / SHADOW_SIZE as f32;
+        // (light index, plan) for each shadow map.
+        let mut plans: Vec<(f32, ShadowPlan)> = Vec::new();
+        if self.ambient[3] > 0.5 {
+            let count = (self.light_count[0] as usize).min(crate::light::MAX_LIGHTS);
+            for i in 0..count {
+                let l = self.lights[i];
+                let slot = l.params[3] as usize;
+                if slot == 0 || slot > MAX_SHADOWS {
+                    continue;
+                }
+                if let Some(plan) = plan_shadow(&l, lo, hi) {
+                    plans.push((i as f32, plan));
+                    self.lights[i].params[3] = plans.len() as f32;
+                } else {
+                    self.lights[i].params[3] = 0.0;
+                }
+            }
+        } else {
+            let light = Vec3::from_slice(&self.light_dir[..3]);
+            let (matrix, radius) = shadow_matrix(light, lo, hi);
+            plans.push((-1.0, ShadowPlan { matrix, perspective: false, texel: 2.0 * radius, blur: 1.2 }));
+        }
+        let rects = atlas_rects(plans.len());
+        for (k, ((light, plan), rect)) in plans.iter().zip(rects).enumerate() {
+            let tile = rect[2] * SHADOW_SIZE as f32;
+            self.shadow_mats[k] = plan.matrix.to_cols_array_2d();
+            self.shadow_rects[k] = rect;
+            self.shadow_info[k] = [
+                plan.texel / tile,
+                if plan.perspective { 1.0 } else { 0.0 },
+                (plan.blur * tile / SHADOW_SIZE as f32).clamp(1.0, 8.0),
+                *light,
+            ];
+        }
+        self.fx[0] = plans.len() as f32;
     }
 
     /// Uses the scene's lights instead of the camera light. Call before
@@ -286,8 +355,10 @@ impl CameraUniform {
     }
 
     /// Quick shading: a headlight only, and no shadows or reflections.
+    /// Wireframe: lines in the objects' colours.
     pub fn set_shading(&mut self, mode: DisplayMode) {
         self.params[1] = if mode.is_quick() { 1.0 } else { 0.0 };
+        self.params[2] = if mode == DisplayMode::Wireframe { 1.0 } else { 0.0 };
         if mode.is_quick() {
             self.fx[0] = 0.0;
             self.fx[1] = 0.0;
@@ -296,6 +367,25 @@ impl CameraUniform {
 
     pub fn shadows_on(&self) -> bool {
         self.fx[0] > 0.5
+    }
+
+    /// How many shadow maps this view draws.
+    pub fn shadow_count(&self) -> usize {
+        self.fx[0].max(0.0) as usize
+    }
+
+    /// Where shadow map `k` sits in the atlas, in pixels: x, y, size.
+    pub fn shadow_viewport(&self, k: usize) -> [f32; 3] {
+        let r = self.shadow_rects[k];
+        let s = SHADOW_SIZE as f32;
+        [r[0] * s, r[1] * s, r[2] * s]
+    }
+
+    /// The copy of this uniform the shadow pass uses for shadow map `k`.
+    pub fn for_shadow_map(&self, k: usize) -> CameraUniform {
+        let mut u = *self;
+        u.shadow_draw = self.shadow_mats[k];
+        u
     }
 
     /// The floor plane is in view (it catches shadows and, with SSAO,
@@ -307,6 +397,69 @@ impl CameraUniform {
     pub fn catcher_on(&self) -> bool {
         self.floor_on() && self.shadows_on()
     }
+}
+
+/// How the shadow atlas is split: one map uses all of it, two to four share
+/// it as quarters.
+pub fn atlas_rects(n: usize) -> Vec<[f32; 4]> {
+    match n {
+        0 => Vec::new(),
+        1 => vec![[0.0, 0.0, 1.0, 1.0]],
+        n => (0..n.min(MAX_SHADOWS)).map(|k| [(k % 2) as f32 * 0.5, (k / 2) as f32 * 0.5, 0.5, 0.5]).collect(),
+    }
+}
+
+/// The shadow map for one scene light covering the box `lo..hi`:
+/// orthographic for directional lights, a perspective view from the light
+/// for the others.
+pub fn plan_shadow(l: &crate::light::LightRaw, lo: Vec3, hi: Vec3) -> Option<ShadowPlan> {
+    let centre = (lo + hi) * 0.5;
+    let radius = ((hi - lo).length() * 0.5).max(1.0);
+    if l.directional() {
+        let (matrix, r) = shadow_matrix(-l.direction(), lo, hi);
+        // Softness is the sun's angular size: the blur grows with the scene.
+        let blur_world = l.params[1] * radius;
+        return Some(ShadowPlan { matrix, perspective: false, texel: 2.0 * r, blur: 1.2 + blur_world / (2.0 * r) * SHADOW_SIZE as f32 });
+    }
+    let pos = l.position();
+    if !pos.is_finite() {
+        return None;
+    }
+    let to_centre = centre - pos;
+    let dist = to_centre.length();
+    let spot = l.kind() > 0.5 && l.kind() < 1.5;
+    let (forward, half_angle, near) = if dist > radius * 1.02 {
+        // Outside the scene: the scene's bounding sphere fills the map.
+        let half = (radius / dist).asin() * 1.04;
+        let mut forward = to_centre / dist;
+        let mut half = half;
+        if spot {
+            // A narrower cone than the scene's: only what the spot lights.
+            let cone = l.dir[3].clamp(-1.0, 1.0).acos();
+            if cone < half {
+                forward = l.direction().normalize_or(forward);
+                half = cone * 1.05;
+            }
+        }
+        (forward, half, (dist - radius).max(dist * 0.002))
+    } else if spot {
+        (l.direction().normalize_or(Vec3::NEG_Y), (l.dir[3].clamp(-1.0, 1.0).acos() * 1.05).min(80f32.to_radians()), radius * 0.002)
+    } else {
+        // Inside the scene: a wide cone towards its middle (or down).
+        let forward = if dist > 1e-3 { to_centre / dist } else { Vec3::NEG_Y };
+        (forward, 75f32.to_radians(), radius * 0.002)
+    };
+    let half_angle = half_angle.clamp(1f32.to_radians(), 80f32.to_radians());
+    let far = dist + radius * 1.05;
+    let near = near.max(0.01).min(far * 0.5);
+    let up = if forward.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+    let view = glam::camera::lh::view::look_at_mat4(pos, pos + forward, up);
+    let proj = glam::camera::lh::proj::directx::perspective(half_angle * 2.0, 1.0, near, far);
+    let per_unit = 2.0 * half_angle.tan();
+    // Blur: the light's size seen from the scene's middle, in texels.
+    let at = dist.max(near * 2.0);
+    let blur = 1.2 + l.params[1] / (at * per_unit) * SHADOW_SIZE as f32 * 0.5;
+    Some(ShadowPlan { matrix: proj * view, perspective: true, texel: per_unit, blur })
 }
 
 /// An orthographic light projection that covers the box `lo..hi`, looking
@@ -322,6 +475,62 @@ pub fn shadow_matrix(light: Vec3, lo: Vec3, hi: Vec3) -> (Mat4, f32) {
     (proj * view, radius)
 }
 
+/// A panel's background image for one frame.
+#[derive(Clone, Debug)]
+pub struct BackgroundDraw {
+    /// Identifies the picture: it is uploaded again only when this changes.
+    pub key: u64,
+    pub image: Arc<BackgroundPixels>,
+    /// Clip-space rectangle (x0, y0, x1, y1), y up.
+    pub rect: [f32; 4],
+    pub opacity: f32,
+}
+
+/// A background picture as 8-bit sRGB RGBA, rows from the top.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackgroundPixels {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl BackgroundPixels {
+    /// From a decoded image, at most `max` pixels on a side.
+    pub fn from_image(img: &crate::texture::Image, max: u32) -> BackgroundPixels {
+        let max = max.max(1);
+        let scale = (img.width.max(img.height) as f32 / max as f32).max(1.0);
+        let w = ((img.width as f32 / scale).round() as u32).max(1);
+        let h = ((img.height as f32 / scale).round() as u32).max(1);
+        let enc = |x: f32| {
+            let x = x.clamp(0.0, 1.0);
+            let s = if x <= 0.003_130_8 { x * 12.92 } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+            (s * 255.0 + 0.5) as u8
+        };
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            let sy = ((y as f32 + 0.5) * scale) as u32;
+            for x in 0..w {
+                let sx = ((x as f32 + 0.5) * scale) as u32;
+                let i = (sy.min(img.height - 1) * img.width + sx.min(img.width - 1)) as usize;
+                let p = img.pixels.get(i).copied().unwrap_or(Vec3::ZERO);
+                rgba.extend_from_slice(&[enc(p.x), enc(p.y), enc(p.z), 255]);
+            }
+        }
+        BackgroundPixels { width: w, height: h, rgba }
+    }
+
+    pub fn aspect(&self) -> f32 {
+        self.width as f32 / self.height.max(1) as f32
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct BackgroundUniform {
+    rect: [f32; 4],
+    params: [f32; 4],
+}
+
 /// Inputs to the SSAO and composite passes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -333,7 +542,7 @@ pub struct PostUniform {
     /// Width, height, 1 / width, 1 / height (physical pixels).
     size: [f32; 4],
     /// x: 1 for orthographic views, y: sign of view-space depth (+1 when the
-    /// camera looks down +z).
+    /// camera looks down +z), z: screen-space reflections on.
     misc: [f32; 4],
 }
 
@@ -353,7 +562,12 @@ impl PostUniform {
                 if fx.post_effects { 1.0 } else { 0.0 },
             ],
             size: [w, h, 1.0 / w, 1.0 / h],
-            misc: [if cam.kind.is_ortho() { 1.0 } else { 0.0 }, if ahead >= 0.0 { 1.0 } else { -1.0 }, 0.0, 0.0],
+            misc: [
+                if cam.kind.is_ortho() { 1.0 } else { 0.0 },
+                if ahead >= 0.0 { 1.0 } else { -1.0 },
+                if fx.ssr { 1.0 } else { 0.0 },
+                0.0,
+            ],
         }
     }
 }
@@ -441,9 +655,9 @@ pub fn build_grid(cam: &Camera) -> Grid {
 
     // (axis along which lines run for "u" lines, axis for "v" lines, index of the fixed axis)
     let (a_idx, b_idx) = match cam.kind {
-        ViewKind::Perspective | ViewKind::Top => (0usize, 2usize), // XZ plane
-        ViewKind::Front => (0, 1),                                  // XY plane
-        ViewKind::Right => (2, 1),                                  // ZY plane
+        ViewKind::Front | ViewKind::Back => (0, 1),  // XY plane
+        ViewKind::Right | ViewKind::Left => (2, 1),  // ZY plane
+        _ => (0usize, 2usize),                       // XZ plane
     };
     let center_a = (cam.target[a_idx] / unit).round() * unit;
     let center_b = (cam.target[b_idx] / unit).round() * unit;
@@ -543,19 +757,30 @@ struct Offscreen {
     composite_group: wgpu::BindGroup,
 }
 
+/// A panel's background image on the GPU.
+struct SlotBackground {
+    key: u64,
+    uniform: wgpu::Buffer,
+    group: wgpu::BindGroup,
+}
+
 struct Slot {
     camera_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    /// Camera uniform only, for the shadow pass (which writes the shadow map
-    /// that `bind_group` samples).
-    shadow_group: wgpu::BindGroup,
+    /// One camera uniform per shadow map, for the shadow pass (which writes
+    /// the shadow atlas that `bind_group` samples).
+    shadow_buffers: Vec<wgpu::Buffer>,
+    shadow_groups: Vec<wgpu::BindGroup>,
     shadow_view: wgpu::TextureView,
     grid_buffer: wgpu::Buffer,
     grid_vertices: u32,
     post_buffer: wgpu::Buffer,
     offscreen: Option<Offscreen>,
+    background: Option<SlotBackground>,
     /// Set by `prepare` when this frame composites from `offscreen`.
     composite: bool,
+    /// Set by `prepare` when this frame draws `background`.
+    background_on: bool,
 }
 
 pub struct GpuResources {
@@ -568,6 +793,8 @@ pub struct GpuResources {
     shadow: wgpu::RenderPipeline,
     ssao: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
+    background: wgpu::RenderPipeline,
+    background_layout: wgpu::BindGroupLayout,
     camera_layout: wgpu::BindGroupLayout,
     shadow_layout: wgpu::BindGroupLayout,
     ssao_layout: wgpu::BindGroupLayout,
@@ -904,6 +1131,32 @@ impl GpuResources {
         });
         // The offscreen image holds premultiplied colour over a transparent
         // background, so it lays over egui's gradient like any other layer.
+        let background_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("forma3d_background_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("background.wgsl").into()),
+        });
+        let background_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("forma3d_background_layout"),
+            entries: &[
+                uniform_entry(0, vf, std::mem::size_of::<BackgroundUniform>()),
+                texture_entry(1, wgpu::TextureSampleType::Float { filterable: true }),
+                sampler_entry(2, wgpu::SamplerBindingType::Filtering),
+            ],
+        });
+        let background_pl = pipeline_layout("forma3d_background_pipeline_layout", &background_layout);
+        let background = make(Desc {
+            label: "forma3d_background",
+            layout: &background_pl,
+            module: &background_shader,
+            vs: "vs_background",
+            fs: Some("fs_background"),
+            buffers: &[],
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull: None,
+            depth: Some(depth(false, wgpu::CompareFunction::Always, no_bias)),
+            format: target_format,
+            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+        });
         let composite = make(Desc {
             label: "forma3d_composite",
             layout: &composite_pl,
@@ -947,6 +1200,8 @@ impl GpuResources {
             shadow,
             ssao,
             composite,
+            background,
+            background_layout,
             camera_layout,
             shadow_layout,
             ssao_layout,
@@ -1011,14 +1266,26 @@ impl GpuResources {
                     },
                 ],
             });
-            let shadow_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("forma3d_shadow_bind_group"),
-                layout: &self.shadow_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: camera_buffer.as_entire_binding(),
-                }],
-            });
+            let shadow_buffers: Vec<wgpu::Buffer> = (0..MAX_SHADOWS)
+                .map(|_| {
+                    buffer(
+                        device,
+                        "forma3d_shadow_camera",
+                        std::mem::size_of::<CameraUniform>(),
+                        wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    )
+                })
+                .collect();
+            let shadow_groups = shadow_buffers
+                .iter()
+                .map(|b| {
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("forma3d_shadow_bind_group"),
+                        layout: &self.shadow_layout,
+                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: b.as_entire_binding() }],
+                    })
+                })
+                .collect();
             let grid_buffer = buffer(
                 device,
                 "forma3d_grid",
@@ -1034,12 +1301,15 @@ impl GpuResources {
             self.slots.push(Slot {
                 camera_buffer,
                 bind_group,
-                shadow_group,
+                shadow_buffers,
+                shadow_groups,
                 shadow_view,
                 grid_buffer,
                 grid_vertices: 0,
                 post_buffer,
                 offscreen: None,
+                background: None,
+                background_on: false,
                 composite: false,
             });
         }
@@ -1157,6 +1427,54 @@ impl GpuResources {
         })
     }
 
+    /// Uploads a panel's background image when it changes.
+    fn prepare_background(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, index: usize, bg: Option<&BackgroundDraw>) {
+        let Some(bg) = bg else {
+            self.slots[index].background_on = false;
+            return;
+        };
+        if self.slots[index].background.as_ref().map(|b| b.key) != Some(bg.key) {
+            let img = &bg.image;
+            let format = if self.target_is_srgb { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm };
+            let size = wgpu::Extent3d { width: img.width.max(1), height: img.height.max(1), depth_or_array_layers: 1 };
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("forma3d_background"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            if img.rgba.len() as u64 >= size.width as u64 * size.height as u64 * 4 {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    &img.rgba,
+                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size.width * 4), rows_per_image: Some(size.height) },
+                    size,
+                );
+            }
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let uniform = buffer(device, "forma3d_background_uniform", std::mem::size_of::<BackgroundUniform>(), wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("forma3d_background_bind_group"),
+                layout: &self.background_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.linear_sampler) },
+                ],
+            });
+            self.slots[index].background = Some(SlotBackground { key: bg.key, uniform, group });
+        }
+        if let Some(b) = &self.slots[index].background {
+            let u = BackgroundUniform { rect: bg.rect, params: [bg.opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0] };
+            queue.write_buffer(&b.uniform, 0, bytemuck::bytes_of(&u));
+        }
+        self.slots[index].background_on = true;
+    }
+
     fn draw_triangles<'a>(&'a self, pass: &mut wgpu::RenderPass<'_>, scene: &'a FrameScene) {
         pass.set_vertex_buffer(1, self.instances.slice(..));
         for (i, mesh) in self.surfaces(scene) {
@@ -1168,21 +1486,28 @@ impl GpuResources {
 
     /// Draws one view's scene: faces, the floor shadow, the grid, then edges.
     /// `floor_depth` puts the floor plane into the depth buffer (for SSAO).
-    fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>, slot: &Slot, scene: &FrameScene, catcher: bool, floor_depth: bool) {
+    #[allow(clippy::too_many_arguments)]
+    fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>, slot: &Slot, scene: &FrameScene, mode: DisplayMode, fx: ViewEffects, catcher: bool, floor_depth: bool) {
+        // 0. The panel's background image.
+        if let Some(bg) = slot.background.as_ref().filter(|_| slot.background_on) {
+            pass.set_pipeline(&self.background);
+            pass.set_bind_group(0, &bg.group, &[]);
+            pass.draw(0..6, 0..1);
+        }
         // 1. Shaded faces.
-        if scene.mode != DisplayMode::Wireframe {
-            pass.set_pipeline(if scene.fx.backface_culling { &self.solid_culled } else { &self.solid });
+        if mode != DisplayMode::Wireframe {
+            pass.set_pipeline(if fx.backface_culling { &self.solid_culled } else { &self.solid });
             pass.set_bind_group(0, &slot.bind_group, &[]);
             self.draw_triangles(pass, scene);
         }
-        if floor_depth && scene.mode != DisplayMode::Wireframe {
+        if floor_depth && mode != DisplayMode::Wireframe {
             pass.set_pipeline(&self.floor_depth);
             pass.set_bind_group(0, &slot.bind_group, &[]);
             pass.draw(0..6, 0..1);
         }
 
         // 2. Shadows on the floor plane.
-        if catcher && scene.mode != DisplayMode::Wireframe {
+        if catcher && mode != DisplayMode::Wireframe {
             pass.set_pipeline(&self.catcher);
             pass.set_bind_group(0, &slot.bind_group, &[]);
             pass.draw(0..6, 0..1);
@@ -1202,7 +1527,7 @@ impl GpuResources {
         pass.set_vertex_buffer(1, self.instances.slice(..));
         let drawable = self.instance_count.min(scene.items.len());
         for (i, item) in scene.items.iter().take(drawable).enumerate() {
-            let show = match scene.mode {
+            let show = match mode {
                 m if m.all_lines() => true,
                 _ => item.selection != SelectionState::None || item.kind == ItemKind::LinesOnly,
             };
@@ -1228,8 +1553,6 @@ impl GpuResources {
 pub struct FrameScene {
     pub items: Vec<DrawItem>,
     pub instances: Vec<InstanceRaw>,
-    pub mode: DisplayMode,
-    pub fx: ViewEffects,
     /// The scene's lights (empty: the default camera light).
     pub lights: crate::light::SceneLights,
     /// World-space bounds of every shaded surface, if there are any.
@@ -1241,9 +1564,10 @@ pub struct FrameScene {
 static NEXT_FRAME_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl FrameScene {
-    pub fn new(items: Vec<DrawItem>, mode: DisplayMode, fx: ViewEffects) -> Self {
-        let wire = mode == DisplayMode::Wireframe;
-        let instances = items.iter().map(|i| InstanceRaw::new(i, wire)).collect();
+    /// The frame's objects. Each view brings its own shading mode and
+    /// render options ([`ViewDraw`]).
+    pub fn new(items: Vec<DrawItem>) -> Self {
+        let instances = items.iter().map(|i| InstanceRaw::new(i, false)).collect();
         let mut bounds: Option<(Vec3, Vec3)> = None;
         for item in items.iter().filter(|i| i.kind == ItemKind::Surface && !i.mesh.indices.is_empty()) {
             let (lo, hi) = (item.mesh.bounds_min, item.mesh.bounds_max);
@@ -1266,8 +1590,6 @@ impl FrameScene {
         FrameScene {
             items,
             instances,
-            mode,
-            fx,
             bounds,
             lights: crate::light::SceneLights::default(),
             serial: NEXT_FRAME_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -1284,6 +1606,10 @@ pub struct ViewDraw {
     pub size_px: [u32; 2],
     pub grid: Vec<GridVertex>,
     pub scene: Arc<FrameScene>,
+    /// This panel's shading and render options.
+    pub mode: DisplayMode,
+    pub fx: ViewEffects,
+    pub background: Option<BackgroundDraw>,
 }
 
 impl ViewDraw {
@@ -1304,13 +1630,19 @@ impl ViewDraw {
             gpu.prepare_scene(device, queue, &self.scene.items, &self.scene.instances);
             gpu.uploaded = self.scene.serial;
         }
+        gpu.prepare_background(device, queue, self.slot, self.background.as_ref());
         let scene = &*self.scene;
-        let fx = scene.fx;
+        let fx = self.fx;
+        let mode = self.mode;
         let shadows = self.camera.shadows_on();
 
-        // Shadow map from the key light.
+        // Shadow maps from every shadow-casting light, sharing one atlas.
         if shadows {
             let slot = &gpu.slots[self.slot];
+            let count = self.camera.shadow_count().min(MAX_SHADOWS);
+            for k in 0..count {
+                queue.write_buffer(&slot.shadow_buffers[k], 0, bytemuck::bytes_of(&self.camera.for_shadow_map(k)));
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("forma3d_shadow_pass"),
                 color_attachments: &[],
@@ -1326,10 +1658,14 @@ impl ViewDraw {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if scene.mode != DisplayMode::Wireframe {
+            if mode != DisplayMode::Wireframe {
                 pass.set_pipeline(&gpu.shadow);
-                pass.set_bind_group(0, &slot.shadow_group, &[]);
-                gpu.draw_triangles(&mut pass, scene);
+                for k in 0..count {
+                    let [x, y, size] = self.camera.shadow_viewport(k);
+                    pass.set_viewport(x, y, size, size, 0.0, 1.0);
+                    pass.set_bind_group(0, &slot.shadow_groups[k], &[]);
+                    gpu.draw_triangles(&mut pass, scene);
+                }
             }
         }
 
@@ -1366,7 +1702,7 @@ impl ViewDraw {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                gpu.draw_scene(&mut pass, slot, scene, self.camera.catcher_on(), fx.ssao && self.camera.floor_on());
+                gpu.draw_scene(&mut pass, slot, scene, mode, fx, self.camera.catcher_on(), (fx.ssao || fx.ssr) && self.camera.floor_on());
             }
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1403,7 +1739,7 @@ impl ViewDraw {
                 pass.set_bind_group(0, &off.composite_group, &[]);
                 pass.draw(0..3, 0..1);
             }
-            _ => gpu.draw_scene(pass, slot, &self.scene, self.camera.catcher_on(), false),
+            _ => gpu.draw_scene(pass, slot, &self.scene, self.mode, self.fx, self.camera.catcher_on(), false),
         }
     }
 }
@@ -1431,8 +1767,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_shadow_casting_light_gets_a_shadow_map() {
+        use crate::light::{Light, LightKind, SceneLights};
+        let at = |p: Vec3| Mat4::from_translation(p);
+        let spot = Light { ..LightKind::Spot.default_light() };
+        let omni = LightKind::Omni.default_light();
+        let mut area = LightKind::Area.default_light();
+        area.size = [300.0, 300.0];
+        let sun = LightKind::Sun.default_light();
+        let down = Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        let lights = SceneLights::gather([
+            (&spot, at(Vec3::new(0.0, 400.0, -300.0)) * Mat4::from_rotation_x(0.9)),
+            (&omni, at(Vec3::new(300.0, 300.0, 0.0))),
+            (&area, at(Vec3::new(-300.0, 300.0, 0.0)) * down),
+            (&sun, down),
+        ]);
+        let cam = Camera::new(crate::camera::ViewKind::Perspective);
+        let mut u = CameraUniform::new(&cam, 1.5, false, Vec3::ZERO, 1000.0);
+        let bounds = Some((Vec3::new(-100.0, 0.0, -100.0), Vec3::new(100.0, 200.0, 100.0)));
+        u.set_lights(&lights, bounds);
+        u.set_effects(ViewEffects { shadows: true, ..Default::default() }, bounds, true);
+        assert_eq!(u.shadow_count(), 4);
+        // Each light points at its own map; maps tile the atlas without overlap.
+        let mut maps: Vec<f32> = u.lights[..4].iter().map(|l| l.params[3]).collect();
+        maps.sort_by(f32::total_cmp);
+        assert_eq!(maps, [1.0, 2.0, 3.0, 4.0]);
+        let tiles: Vec<[f32; 3]> = (0..4).map(|k| u.shadow_viewport(k)).collect();
+        for (i, a) in tiles.iter().enumerate() {
+            assert!(a[0] + a[2] <= SHADOW_SIZE as f32 && a[1] + a[2] <= SHADOW_SIZE as f32);
+            for b in &tiles[i + 1..] {
+                assert!(a[0] != b[0] || a[1] != b[1], "two maps share a tile");
+            }
+        }
+        // Every map sees the whole scene box.
+        for k in 0..4 {
+            let m = Mat4::from_cols_array_2d(&u.shadow_mats[k]);
+            for c in 0..8 {
+                let (lo, hi) = bounds.unwrap();
+                let p = Vec3::new(
+                    if c & 1 == 0 { lo.x } else { hi.x },
+                    if c & 2 == 0 { lo.y } else { hi.y },
+                    if c & 4 == 0 { lo.z } else { hi.z },
+                );
+                let q = m * p.extend(1.0);
+                let ndc = q.truncate() / q.w;
+                assert!(q.w > 0.0 && ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0 && (0.0..=1.0).contains(&ndc.z), "map {k} misses {p}: {ndc}");
+            }
+        }
+        // The big area light blurs its shadows more than the point light.
+        let blur_of = |kind: f32| (0..4).find(|&k| u.lights[u.shadow_info[k][3] as usize].pos[3] == kind).map(|k| u.shadow_info[k][2]).unwrap();
+        assert!(blur_of(2.0) > blur_of(0.0));
+        // One shadow map uses the whole atlas.
+        assert_eq!(atlas_rects(1), vec![[0.0, 0.0, 1.0, 1.0]]);
+    }
+
+    #[test]
     fn pod_layouts_match_the_shader() {
-        assert_eq!(std::mem::size_of::<CameraUniform>(), 64 + 5 * 16 + 64 + 16 + 2 * 16 + 8 * 64);
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 64 + 5 * 16 + 64 + 16 + 2 * 16 + 8 * 80 + 4 * 64 + 2 * 4 * 16);
         assert_eq!(std::mem::size_of::<PostUniform>(), 2 * 64 + 3 * 16);
         assert_eq!(std::mem::size_of::<InstanceRaw>(), 64 + 48 + 16 + 16);
         assert_eq!(std::mem::size_of::<GridVertex>(), 28);
@@ -1502,5 +1893,34 @@ mod tests {
         let inst = InstanceRaw::new(&item, false);
         assert!(inst.normal.iter().flatten().all(|c| c.is_finite()));
         assert_eq!(inst.flags[0], 2.0);
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    /// The viewport shaders compile, and translate to WebGL's GLSL.
+    #[test]
+    fn shaders_validate_and_translate_to_glsl() {
+        for (name, src) in [("shader.wgsl", include_str!("shader.wgsl")), ("post.wgsl", include_str!("post.wgsl")), ("background.wgsl", include_str!("background.wgsl"))] {
+            let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(src)));
+            let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            for ep in &module.entry_points {
+                let mut out = String::new();
+                let options = naga::back::glsl::Options {
+                    version: naga::back::glsl::Version::Embedded { version: 300, is_webgl: true },
+                    ..Default::default()
+                };
+                let pipeline = naga::back::glsl::PipelineOptions {
+                    shader_stage: ep.stage,
+                    entry_point: ep.name.clone(),
+                    multiview: None,
+                };
+                let mut w = naga::back::glsl::Writer::new(&mut out, &module, &info, &options, &pipeline, naga::proc::BoundsCheckPolicies::default())
+                    .unwrap_or_else(|e| panic!("{name} {}: {e:?}", ep.name));
+                w.write().unwrap_or_else(|e| panic!("{name} {}: {e:?}", ep.name));
+            }
+        }
     }
 }

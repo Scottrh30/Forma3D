@@ -34,7 +34,10 @@ pub struct Input {
 /// One view: which camera, and its size on screen.
 #[derive(Clone, Copy, Debug)]
 pub struct View {
+    /// The projection shown.
     pub kind: ViewKind,
+    /// The panel (one of [`ViewKind::ALL`]).
+    pub slot: ViewKind,
     pub size: Vec2,
     pub cam: Camera,
 }

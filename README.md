@@ -65,7 +65,9 @@ compared (November 2026) and none was worth rewriting the interface for. Highlig
   folder; autosaves go to an `autosave` folder in the app's data folder. In a plain browser they go to the
   page's local storage.
 - **Interface Scale** (Preferences) zooms the whole window.
-- **Four views:** F5, the Panel menu, the view bar or the HUD button; each view's corner button goes back to one.
+- **Layouts:** 1 view, 2 side by side or stacked, 3 (one large left or top) and 4 views, from the Panel menu,
+  View > Layout or the Commander (F5 is 4 views). Each view's corner button goes back to one; the HUD button
+  toggles back to the last several-view layout.
 - The window's close button, Alt+F4 and the taskbar all ask before quitting with unsaved changes.
 - Right-click (without dragging) in the view for a Create menu, or the Mesh commands in component modes.
 - **Icon bar** (the row at the top of the viewport): drag icons along it to move them or off it to remove them;
@@ -105,7 +107,22 @@ compared (November 2026) and none was worth rewriting the interface for. Highlig
     component modes.
   - **Viewport**: each view has its own View / Cameras / Display / Shading / Options / Filter / Panel menus and
     drag-to-navigate icons (drag the cross to pan, the arrows to zoom, the circle to orbit; the last icon
-    toggles this view / four views). Gradient background, optional grid and axis compass, object-type filters.
+    toggles this view / several views). Gradient background, optional grid and axis compass, object-type filters.
+    The menus change the **active view** (the one you last clicked, outlined in orange): each view has its own
+    projection, shading, render options, grid, compass, Safe Frames and background image.
+  - **Projections** (Cameras menu): Perspective, Left, Right, Front, Back, Top, Bottom, Isometric and
+    Dimetric, in any view. Switching keeps what the view looks at.
+  - **Undo View / Redo View** (Alt+Z / Alt+Y, View menu): each view remembers its last 64 cameras, so you can
+    step back through orbiting, panning, zooming and framing. It doesn't touch the scene's undo.
+  - **Safe Frames** (Display menu): dims what a render won't show and draws the action safe (90 %) and title
+    safe (80 %) areas, for the Render Settings' size.
+  - **Background images** (Display > Load Background Image, or Configure View): a PNG or JPEG behind a view,
+    with opacity and Fit / Fill / Stretch, or **In Scene** for parallel views: a blueprint a set width in cm
+    at an offset, that pans and zooms with the view.
+  - **Configure View** (Shift+V): the active view's settings in one dialog; Use in All Views copies them to the
+    other views.
+  - The layout, every view's camera and its settings (backgrounds included) are **saved with the scene** and
+    come back when it is opened. Older files open with the default views.
   - **Icon bar** above the viewport: a row of command buttons you arrange yourself. Drag an icon along
     the bar to move it (an orange line shows where it lands), drag it off the bar to remove it, and drag
     new ones in from the **Icon Library** (the + at the end of the bar, or Window > Icon Library), or
@@ -117,16 +134,21 @@ compared (November 2026) and none was worth rewriting the interface for. Highlig
     Subdivision Surface, then framing, display modes, the render options, grid / solo / 4 views, Make Editable,
     Duplicate and Delete.
   - **Viewport Options** (each view's Options menu, also in the Commander). All are off by default and
-    apply to every view:
+    apply to the active view (Tessellation to every view):
     - **Post Effects**: FXAA anti-aliasing, a gentle contrast curve and saturation, and a vignette.
     - **Tessellation**: Phong tessellation at display time (each triangle split into 9) so curved
       objects get rounder silhouettes. Flat faces stay flat and hard edges stay sharp and crack-free.
       The objects themselves are not changed.
-    - **Shadows**: a 2048-pixel shadow map from the key light (which follows the camera), soft-edged
-      (3x3 PCF), with objects shadowing each other and the floor (in Perspective and Top, when the
-      grid is shown).
+    - **Shadows**: shadows from **every light that casts them** (the four brightest), each with its own shadow
+      map in a shared 2048-pixel atlas: an orthographic map for Sun, Infinite and Parallel lights, a
+      perspective one from the light for Point, Omni, Spot and Area lights. Large lights and Shadow Softness blur
+      their shadows (wider PCF), objects shadow each other and the floor (in Perspective, Top, Isometric and
+      Dimetric, when the grid is shown), and the floor's shadows are weighted by how much of its light each one
+      blocks. With no scene lights, the key light (which follows the camera) casts them.
     - **Reflections**: a Fresnel-weighted reflection of a studio surround (sky, floor and two softboxes
       fixed in the world, so highlights slide across objects as you orbit).
+    - **Screen-Space Reflections**: objects reflect each other (and show faintly in the floor) by tracing the
+      mirror ray through the depth buffer, with Fresnel, fading at the screen's edges.
     - **SSAO**: screen-space ambient occlusion (16 samples, depth-aware blur), including contact
       occlusion between objects and the floor.
     - **Backface Culling**: hides polygons facing away from the camera, which shows flipped normals.
@@ -166,7 +188,7 @@ compared (November 2026) and none was worth rewriting the interface for. Highlig
     Reset PSR, Loop Selection, Frame Default, the viewport filters, Apply / Delete Material, Open Material
     Editor, Remove Material Tag, and one "Material Tag: <name>" per material (assigns it to the selection).
     The panel menus use the same commands, so they show the same shortcuts.
-- Viewport: perspective plus Top / Right / Front orthographic views, single or four-view layout.
+- Viewport: perspective plus six orthographic views and two axonometric ones, in 1 to 4 view layouts.
   Shading menu (per view header, also View menu, Commander and `N~` keys as in Cinema 4D): **Gouraud Shading**
   (`N~A`), **Gouraud Shading (Lines)** (`N~B`), **Lines** (`N~H`), **Quick Shading** (`N~C`) and **Quick Shading
   (Lines)** (`N~D`). Quick shading lights from the camera only, with no highlight, shadows or reflections, for
@@ -189,7 +211,9 @@ compared (November 2026) and none was worth rewriting the interface for. Highlig
   (Area, Point, Spot, Omni); Inner and Outer Angle (Spot); Size X/Y (Area). Point lights fade with distance by
   default, Omni lights don't. The Dome lights everything evenly from the sky; the Sun's colour follows its height
   (white at noon, orange low down, gone below the horizon) and it brings a soft blue sky. With Options > Shadows
-  on, the brightest light that casts shadows casts them. Lights have their own viewport Filter. Also in the Light
+  on, up to four lights cast shadows. **Area lights** light the viewport as they do in a render: from their
+  whole rectangle (sampled 4 x 4), from the front only, with a highlight shaped by the rectangle and soft
+  shadows. Lights have their own viewport Filter. Also in the Light
   menu: **Parallel** (like Infinite, but only in front of its plane), **Target Light** (a spot aimed at a new Null
   through its Look At field) and the **Light Lister** (every light in one table). Lights have Shadow Softness,
   Density and Colour, and **light linking**: Include or Exclude a list of objects (with their children).

@@ -187,6 +187,16 @@ pub fn path(name: &str) -> &'static str {
             r#"<path d="M3 17h18"/><path d="M8 17V7M5 10l3-3 3 3M16 17V9"/><path d="m13 12 3-3 3 3"/>"#
         }
         "single" => r#"<rect x="3" y="4" width="18" height="16" rx="2"/>"#,
+        "layout-2h" => r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>"#,
+        "layout-2v" => r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 12h18"/>"#,
+        "layout-3l" => r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16M14 12h7"/>"#,
+        "layout-3t" => r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 14h18M12 14v6"/>"#,
+        "view-undo" => r#"<rect x="9" y="8" width="12" height="10" rx="1.5"/><path d="M7 7 4 10l3 3"/><path d="M4 10h4"/>"#,
+        "view-redo" => r#"<rect x="3" y="8" width="12" height="10" rx="1.5"/><path d="m17 7 3 3-3 3"/><path d="M20 10h-4"/>"#,
+        "safe-frames" => r#"<rect x="3" y="4" width="18" height="16" rx="1"/><rect x="6" y="7" width="12" height="10" stroke-dasharray="2 2"/>"#,
+        "view-persp" => r#"<path d="M4 7l6-3h10v12l-6 4H4z"/><path d="M4 7h10v13M14 7l6-3"/>"#,
+        "view-ortho" => r#"<rect x="4" y="4" width="16" height="16"/><path d="M4 12h16M12 4v16" stroke-dasharray="2 2"/>"#,
+        "view-axo" => r#"<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12 4 7.5"/>"#,
         "quad" => {
             r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16M3 12h18"/>"#
         }
@@ -207,6 +217,9 @@ pub fn path(name: &str) -> &'static str {
         }
         "fx-reflect" => {
             r#"<path d="M3 13h18"/><path d="M8 13V5l6 8" /><path d="M8 13v6l6-6" stroke-dasharray="2 2"/>"#
+        }
+        "fx-ssr" => {
+            r#"<path d="M3 14h18"/><rect x="7" y="5" width="6" height="7" rx="1"/><rect x="7" y="16" width="6" height="4" rx="1" fill="currentColor" fill-opacity=".35" stroke-dasharray="2 1.5"/>"#
         }
         "fx-ssao" => {
             r#"<path d="M4 20V8h16v12"/><path d="M4 8l4 4h8l4-4" fill="currentColor" fill-opacity=".3"/>"#

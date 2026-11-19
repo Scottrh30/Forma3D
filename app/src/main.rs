@@ -23,6 +23,7 @@ mod render;
 mod settings;
 mod state;
 mod timeline;
+mod viewcfg;
 mod viewport;
 mod vinput;
 mod worker;
@@ -199,6 +200,7 @@ fn Root() -> impl IntoView {
             <Commander />
             <Dialogs />
             <render::RenderSettingsDialog />
+            <viewcfg::ConfigureView />
         </div>
     }
 }

@@ -226,43 +226,29 @@ impl Rect {
     }
 }
 
-/// Where the views go: one, or four (Top, Perspective / Right, Front).
+/// Where the views go, for the current layout (1 to 4 panels).
 pub fn view_rects(ed: &Editor, stage: Vec2) -> Vec<Rect> {
-    match ed.layout {
-        ViewLayout::Single => vec![Rect {
-            kind: ed.single_view,
-            min: Vec2::ZERO,
-            size: stage,
-        }],
-        ViewLayout::Quad => {
-            let gap = 2.0;
-            let w = ((stage.x - gap) * 0.5).floor();
-            let h = ((stage.y - gap) * 0.5).floor();
-            let cell = |c: f32, r: f32| Vec2::new(c * (w + gap), r * (h + gap));
-            vec![
-                Rect {
-                    kind: ViewKind::Top,
-                    min: cell(0.0, 0.0),
-                    size: Vec2::new(w, h),
-                },
-                Rect {
-                    kind: ViewKind::Perspective,
-                    min: cell(1.0, 0.0),
-                    size: Vec2::new(stage.x - w - gap, h),
-                },
-                Rect {
-                    kind: ViewKind::Right,
-                    min: cell(0.0, 1.0),
-                    size: Vec2::new(w, stage.y - h - gap),
-                },
-                Rect {
-                    kind: ViewKind::Front,
-                    min: cell(1.0, 1.0),
-                    size: Vec2::new(stage.x - w - gap, stage.y - h - gap),
-                },
-            ]
-        }
-    }
+    let gap = 2.0;
+    let panels = ed.shown_panels();
+    ed.layout
+        .cells()
+        .into_iter()
+        .zip(panels)
+        .map(|(c, kind)| {
+            // Snap the cell edges to whole pixels and leave a gap between panels.
+            let x0 = (c[0] * stage.x).floor();
+            let y0 = (c[1] * stage.y).floor();
+            let x1 = ((c[0] + c[2]) * stage.x).floor();
+            let y1 = ((c[1] + c[3]) * stage.y).floor();
+            let gx = if c[0] + c[2] < 0.999 { gap } else { 0.0 };
+            let gy = if c[1] + c[3] < 0.999 { gap } else { 0.0 };
+            Rect {
+                kind,
+                min: Vec2::new(x0, y0),
+                size: Vec2::new((x1 - x0 - gx).max(1.0), (y1 - y0 - gy).max(1.0)),
+            }
+        })
+        .collect()
 }
 
 /// The pointer over the stage, between events.
@@ -314,9 +300,9 @@ fn visible_objects(ed: &mut Editor) -> Vec<RenderObject> {
     objects
 }
 
-fn grid_for(ed: &Editor, cam: &forma3d_core::camera::Camera, kind: ViewKind) -> renderer::Grid {
+fn grid_for(ed: &Editor, cam: &forma3d_core::camera::Camera) -> renderer::Grid {
     let wp = ed.scene.workplane;
-    if kind == ViewKind::Perspective && !wp.is_default() {
+    if (cam.kind == ViewKind::Perspective || cam.kind.is_axonometric()) && !wp.is_default() {
         renderer::build_grid_on(cam, wp.matrix())
     } else {
         renderer::build_grid(cam)
@@ -345,14 +331,15 @@ fn run_tools(
         }
         let cam = ed.cameras[r.kind.index()];
         let v = View {
-            kind: r.kind,
+            kind: cam.kind,
+            slot: r.kind,
             size: r.size,
             cam,
         };
         let inp = input_for(i, r, ptr, f);
         let snap = SnapCtx {
             objects,
-            grid_unit: grid_for(ed, &cam, r.kind).unit,
+            grid_unit: grid_for(ed, &cam).unit,
         };
         let mut p = Painter::default();
         if ed.pen.is_some() {
@@ -372,6 +359,26 @@ fn run_tools(
     svg
 }
 
+thread_local! {
+    /// Decoded background images, by picture.
+    static BACKGROUNDS: std::cell::RefCell<std::collections::HashMap<u64, Option<Arc<renderer::BackgroundPixels>>>> = Default::default();
+}
+
+/// A panel's background image, decoded once per picture (None if it can't
+/// be read).
+fn background_pixels(bg: &forma3d_core::views::Background) -> Option<Arc<renderer::BackgroundPixels>> {
+    let key = bg.key();
+    BACKGROUNDS.with_borrow_mut(|cache| {
+        if cache.len() > 16 {
+            cache.clear();
+        }
+        cache
+            .entry(key)
+            .or_insert_with(|| bg.image().ok().map(|img| Arc::new(renderer::BackgroundPixels::from_image(&img, 4096))))
+            .clone()
+    })
+}
+
 /// Builds every view's drawing for this frame.
 fn build_draws(
     ed: &Editor,
@@ -380,12 +387,12 @@ fn build_draws(
     srgb: bool,
     dpr: f32,
 ) -> Vec<ViewDraw> {
-    let fx = ed.view_opts.fx;
+    let tessellate = ed.view_opts.tessellation;
     let items: Vec<DrawItem> = TESSELLATION.with_borrow_mut(|cache| {
         let items = objects
             .iter()
             .map(|o| DrawItem {
-                mesh: if fx.tessellation && o.kind == renderer::ItemKind::Surface {
+                mesh: if tessellate && o.kind == renderer::ItemKind::Surface {
                     cache.get(&o.mesh)
                 } else {
                     o.mesh.clone()
@@ -399,7 +406,7 @@ fn build_draws(
         cache.end_frame();
         items
     });
-    let mut frame = FrameScene::new(items, ed.display, fx);
+    let mut frame = FrameScene::new(items);
     frame.lights = ed.scene_lights();
     let frame = Arc::new(frame);
     rects
@@ -408,24 +415,33 @@ fn build_draws(
         .filter(|(_, r)| r.size.x >= 40.0 && r.size.y >= 40.0)
         .map(|(slot, r)| {
             let cam = ed.cameras[r.kind.index()];
+            let panel = ed.panel(r.kind);
+            let fx = panel.fx;
             let aspect = (r.size.x / r.size.y.max(1.0)).max(0.01);
             let wp = ed.scene.workplane;
-            let on_workplane = r.kind == ViewKind::Perspective && !wp.is_default();
-            let mut grid = grid_for(ed, &cam, r.kind);
-            if !ed.view_opts.grid {
+            let on_workplane = (cam.kind == ViewKind::Perspective || cam.kind.is_axonometric()) && !wp.is_default();
+            let mut grid = grid_for(ed, &cam);
+            if !panel.grid {
                 grid.vertices.clear();
             }
             let mut uniform = CameraUniform::new(&cam, aspect, srgb, grid.center, grid.radius);
-            let floor = ed.view_opts.grid
-                && !on_workplane
-                && matches!(r.kind, ViewKind::Perspective | ViewKind::Top);
+            let floor = panel.grid && !on_workplane && cam.kind.sees_floor();
             uniform.set_lights(&frame.lights, frame.bounds);
             uniform.set_effects(fx, frame.bounds, floor);
-            uniform.set_shading(frame.mode);
+            uniform.set_shading(panel.display);
             let size_px = [
                 (r.size.x * dpr).round().max(1.0) as u32,
                 (r.size.y * dpr).round().max(1.0) as u32,
             ];
+            let background = panel.background.as_ref().filter(|b| b.show).and_then(|b| {
+                let image = background_pixels(b)?;
+                Some(renderer::BackgroundDraw {
+                    key: b.key(),
+                    rect: b.placement(&cam, aspect, image.aspect()),
+                    opacity: b.opacity,
+                    image,
+                })
+            });
             ViewDraw {
                 slot,
                 camera: uniform,
@@ -433,6 +449,9 @@ fn build_draws(
                 size_px,
                 grid: grid.vertices,
                 scene: frame.clone(),
+                mode: panel.display,
+                fx,
+                background,
             }
         })
         .collect()
@@ -456,16 +475,17 @@ fn hardware_render(
         if w > max || h > max {
             return Err(format!("the graphics card renders at most {max} × {max} pixels"));
         }
-        let (frame, fx) = app.ed.try_update_value(|ed| {
+        let (frame, (fx, mode)) = app.ed.try_update_value(|ed| {
             let items: Vec<DrawItem> = ed
                 .final_objects()
                 .into_iter()
                 .map(|o| DrawItem { mesh: o.mesh, model: o.world, color: o.color, selection: o.selection, kind: o.kind })
                 .collect();
-            let fx = ed.view_opts.fx;
-            let mut frame = FrameScene::new(items, ed.display, fx);
+            let panel = ed.active_panel();
+            let (fx, mode) = (panel.fx, panel.display);
+            let mut frame = FrameScene::new(items);
             frame.lights = ed.scene_lights();
-            (frame, fx)
+            (frame, (fx, mode))
         }).ok_or("no project")?;
         let aspect = w as f32 / h.max(1) as f32;
         let mut cam = pose.to_editor(aspect, 500.0);
@@ -475,7 +495,7 @@ fn hardware_render(
         let mut uniform = CameraUniform::new(&cam, aspect, g.srgb, glam::Vec3::ZERO, 1e7);
         uniform.set_lights(&frame.lights, frame.bounds);
         uniform.set_effects(fx, frame.bounds, false);
-        uniform.set_shading(frame.mode);
+        uniform.set_shading(mode);
         let draw = ViewDraw {
             slot: 4,
             camera: uniform,
@@ -483,6 +503,9 @@ fn hardware_render(
             size_px: [w, h],
             grid: Vec::new(),
             scene: Arc::new(frame),
+            mode,
+            fx,
+            background: None,
         };
         let format = g.config.format;
         let target = g.device.create_texture(&wgpu::TextureDescriptor {
@@ -634,7 +657,8 @@ pub fn pen_key(app: App, enter: bool) {
     app.act(|ed| {
         let k = ed.active_view;
         let v = View {
-            kind: k,
+            kind: ed.cameras[k.index()].kind,
+            slot: k,
             size: Vec2::ONE,
             cam: ed.cameras[k.index()],
         };
@@ -924,10 +948,9 @@ pub fn Viewport() -> impl IntoView {
             let _ = t.set_pointer_capture(ev.pointer_id());
         }
         let Some((i, r)) = view_at(m) else { return };
-        app.view(|ed| ed.active_view = r.kind);
+        let ortho = app.peek(|ed| ed.cameras[r.kind.index()].kind.is_ortho());
         let button = ev.button();
         let alt = ev.alt_key();
-        let ortho = r.kind.is_ortho();
         let nav = match (button, alt) {
             (0, true) => Some(if ortho { NavMode::Pan } else { NavMode::Orbit }),
             (1, _) => Some(NavMode::Pan),
@@ -935,6 +958,13 @@ pub fn Viewport() -> impl IntoView {
             (2, false) => Some(if ortho { NavMode::Pan } else { NavMode::Orbit }),
             _ => None,
         };
+        app.view(|ed| {
+            ed.active_view = r.kind;
+            // Undo View goes back to before this navigation.
+            if nav.is_some() {
+                ed.record_view(r.kind);
+            }
+        });
         ptr.update_value(|p| {
             p.pos = Some(m);
             p.mods = mods(&ev);
@@ -1031,12 +1061,22 @@ pub fn Viewport() -> impl IntoView {
         app.view_rev.update(|r| *r += 1);
     };
 
+    let last_wheel = StoredValue::new(0.0f64);
     let on_wheel = move |ev: web_sys::WheelEvent| {
         ev.prevent_default();
         let dy = ev.delta_y() as f32;
         let m = Vec2::new(ev.offset_x() as f32, ev.offset_y() as f32);
         let Some((_, r)) = view_at(m) else { return };
-        app.view(|ed| ed.cameras[r.kind.index()].zoom((1.0 + dy * 0.0012).clamp(0.5, 2.0)));
+        // One Undo View step per burst of wheel turns.
+        let now = window().performance().map(|p| p.now()).unwrap_or(0.0);
+        let fresh = now - last_wheel.get_value() > 600.0;
+        last_wheel.set_value(now);
+        app.view(|ed| {
+            if fresh {
+                ed.record_view(r.kind);
+            }
+            ed.cameras[r.kind.index()].zoom((1.0 + dy * 0.0012).clamp(0.5, 2.0))
+        });
     };
 
     // A material dropped from the Material Manager goes onto the object under it.
@@ -1058,10 +1098,12 @@ pub fn Viewport() -> impl IntoView {
                 .filter(|o| !ed.scene.is_locked(o.id))
                 .map(|o| o.pick_item())
                 .collect();
+            let cam = ed.cameras[r.kind.index()];
             let v = View {
-                kind: r.kind,
+                kind: cam.kind,
+                slot: r.kind,
                 size: r.size,
-                cam: ed.cameras[r.kind.index()],
+                cam,
             };
             let (ro, rd) = v.ray(m - r.min);
             if let Some((id, _)) = picking::pick(&pick, ro, rd) {
@@ -1071,7 +1113,7 @@ pub fn Viewport() -> impl IntoView {
         });
     };
 
-    let quad = move || app.read(|e| e.layout == ViewLayout::Quad);
+    let quad = move || app.read(|e| e.layout != ViewLayout::Single);
     let shown_timeline = move || app.timeline_shown();
 
     view! {
@@ -1140,10 +1182,9 @@ pub fn Viewport() -> impl IntoView {
                 <div class="hud">
                     <button class="tb" title="Frame all (H)" on:click=move |_| crate::commands::run(app, Cmd::FrameAll)>{icon("frame")}</button>
                     <button class="tb" title="Frame selected (S)" on:click=move |_| crate::commands::run(app, Cmd::FrameSelected)>{icon("frame-sel")}</button>
-                    <button class="tb" title="1 view / 4 views (F5)" on:click=move |_| {
-                        let q = app.peek(|e| e.layout == ViewLayout::Quad);
-                        let k = app.peek(|e| e.active_view);
-                        crate::commands::run(app, if q { Cmd::Camera(k) } else { Cmd::FourViews });
+                    <button class="tb" title="1 view / several views (F5)" on:click=move |_| {
+                        let (q, k, multi) = app.peek(|e| (e.layout != ViewLayout::Single, e.active_view, e.last_multi));
+                        crate::commands::run(app, if q { Cmd::Camera(k) } else { Cmd::Layout(multi) });
                     }>{move || if quad() { icon("single") } else { icon("quad") }}</button>
                 </div>
                 <crate::render::RenderOverlay rect=Signal::derive(move || {

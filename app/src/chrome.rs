@@ -27,7 +27,7 @@ pub enum Entry {
     C(Cmd),
     Sep,
     Sub(&'static str, Vec<Entry>),
-    /// A control inside a menu: "snap-radius", "quantize", "projects", "layout".
+    /// A control inside a menu: "snap-radius", "quantize", "projects".
     Widget(&'static str),
 }
 
@@ -183,13 +183,16 @@ pub fn menu(name: &str) -> Vec<Entry> {
         "Mesh" => mesh_menu(),
         "View" | "v-View" => {
             let mut v = vec![
+                C(Cmd::UndoView),
+                C(Cmd::RedoView),
+                Sep,
                 C(Cmd::FrameSelected),
                 C(Cmd::FrameAll),
                 C(Cmd::FrameDefault),
                 Sep,
             ];
             v.extend(cmds(ViewKind::ALL.map(Cmd::Camera)));
-            v.push(C(Cmd::FourViews));
+            v.push(Sub("Layout", cmds(ViewLayout::ALL.map(Cmd::Layout))));
             if name == "View" {
                 v.push(Sep);
                 v.extend(cmds(DisplayMode::ALL.map(Cmd::Display)));
@@ -198,19 +201,28 @@ pub fn menu(name: &str) -> Vec<Entry> {
                 Sep,
                 C(Cmd::ToggleGrid),
                 C(Cmd::ToggleCompass),
+                C(Cmd::ToggleSafeFrames),
                 C(Cmd::ToggleSolo),
+                Sep,
+                C(Cmd::ConfigureView),
             ]);
             v
         }
         "v-Cameras" => {
             let mut v = vec![C(Cmd::LookThrough), C(Cmd::EditorCamera), Sep, C(Cmd::UseRenderCamera), C(Cmd::FocusOnSelection), Sep];
-            v.extend(cmds(ViewKind::ALL.map(Cmd::Camera)));
+            // What this panel shows: C4D's Cameras menu projections.
+            v.extend(cmds(ViewKind::PROJECTIONS.map(Cmd::Projection)));
             v
         }
         "v-Display" => vec![
             C(Cmd::ToggleGrid),
             C(Cmd::ToggleCompass),
+            C(Cmd::ToggleSafeFrames),
             C(Cmd::ToggleSolo),
+            Sep,
+            C(Cmd::LoadBackground),
+            C(Cmd::ClearBackground),
+            C(Cmd::ConfigureView),
             Sep,
             C(Cmd::ToggleTimeline),
         ],
@@ -221,7 +233,11 @@ pub fn menu(name: &str) -> Vec<Entry> {
             v.extend([Sep, C(Cmd::ToggleGrid)]);
             v
         }
-        "v-Panel" => vec![Widget("layout")],
+        "v-Panel" => {
+            let mut v = cmds(ViewLayout::ALL.map(Cmd::Layout));
+            v.extend([Sep, C(Cmd::ConfigureView)]);
+            v
+        }
         "Window" => {
             let mut v = vec![C(Cmd::Commander), C(Cmd::CustomizeCommands), Sep];
             let mut ws = cmds(Workspace::ALL.map(Cmd::Workspace));
@@ -317,26 +333,6 @@ fn widget(name: &'static str) -> AnyView {
             }}
         }
         .into_any(),
-        "layout" => {
-            let single = move || app.read(|e| e.layout == ViewLayout::Single);
-            view! {
-                <div class="mi" on:click=move |_| {
-                    let k = app.peek(|e| e.active_view);
-                    commands::run(app, Cmd::Camera(k));
-                }>
-                    <span class="chk">{move || if single() { "✓" } else { "" }}</span>
-                    <span class="ico">{icon_s("single")}</span>
-                    "Single View (the active view)"
-                </div>
-                <div class="mi" on:click=move |_| commands::run(app, Cmd::FourViews)>
-                    <span class="chk">{move || if single() { "" } else { "✓" }}</span>
-                    <span class="ico">{icon_s("quad")}</span>
-                    "4 Views"
-                    <span class="key">{move || app.keymap.with(|k| k.label(Cmd::FourViews))}</span>
-                </div>
-            }
-            .into_any()
-        }
         _ => view! { <div></div> }.into_any(),
     }
 }

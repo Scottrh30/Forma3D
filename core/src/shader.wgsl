@@ -7,20 +7,27 @@ struct Camera {
     forward: vec4<f32>,
     // xyz: unit vector pointing towards the key light
     light_dir: vec4<f32>,
-    // x: 1 when the render target is sRGB (colours must be linearised)
+    // x: 1 when the render target is sRGB (colours must be linearised),
+    // y: quick shading, z: wireframe display
     params: vec4<f32>,
     // xyz: grid fade centre, w: grid fade radius
     fade: vec4<f32>,
-    // world -> shadow map clip space
-    light_view_proj: mat4x4<f32>,
-    // x: shadows on, y: reflections on, z: shadow texel size (world units),
-    // w: the floor plane (y = 0) is shown
+    // the shadow map the shadow pass is drawing
+    shadow_draw: mat4x4<f32>,
+    // x: number of shadow maps, y: reflections on, w: the floor plane (y = 0) is shown
     fx: vec4<f32>,
     // rgb: ambient from Dome lights; w: 1 when scene lights replace the camera light
     ambient: vec4<f32>,
     // x: number of direct lights
     light_count: vec4<f32>,
     lights: array<SceneLight, 8>,
+    // world -> shadow clip space, per shadow map
+    shadow_mats: array<mat4x4<f32>, 4>,
+    // atlas uv offset (xy) and size (zw), per shadow map
+    shadow_rects: array<vec4<f32>, 4>,
+    // x: texel size (per unit distance when perspective), y: 1 perspective,
+    // z: blur radius in texels, w: light index (-1: the camera light)
+    shadow_info: array<vec4<f32>, 4>,
 };
 
 struct SceneLight {
@@ -30,12 +37,89 @@ struct SceneLight {
     dir: vec4<f32>,
     // rgb: colour x intensity; w: cos(inner cone)
     color: vec4<f32>,
-    // x: falloff radius (0 = none); y: area half-size
+    // x: falloff radius (0 = none); y: shadow softness; z: casts shadows;
+    // w: shadow map + 1 (0: none)
     params: vec4<f32>,
+    // area lights: xyz half-width axis, w half height
+    axis: vec4<f32>,
 };
 
-// Lighting from the scene's lights: Dome ambient plus each direct light. The
-// first light casts the shadows.
+@group(0) @binding(0) var<uniform> cam: Camera;
+@group(0) @binding(1) var shadow_map: texture_depth_2d;
+@group(0) @binding(2) var shadow_sampler: sampler_comparison;
+
+// Direction towards a light from `world` and how much of it arrives there
+// (falloff and spot cone), ignoring the surface's orientation.
+fn light_reach(light: SceneLight, world: vec3<f32>) -> vec4<f32> {
+    let kind = light.pos.w;
+    if (kind > 2.5) {
+        return vec4<f32>(normalize(-light.dir.xyz), 1.0);
+    }
+    let d = light.pos.xyz - world;
+    let dist = max(length(d), 1e-3);
+    let l = d / dist;
+    var att = 1.0;
+    if (light.params.x > 0.0) {
+        let t = clamp(1.0 - dist / light.params.x, 0.0, 1.0);
+        att = t * t;
+    }
+    if (kind > 0.5 && kind < 1.5) {
+        att = att * smoothstep(light.dir.w, max(light.color.w, light.dir.w + 1e-4), dot(-l, normalize(light.dir.xyz)));
+    }
+    return vec4<f32>(l, att);
+}
+
+// An area light as the final render sees it: light from every point of its
+// rectangle (4 x 4 points), each shining from the front only. Returns the
+// diffuse amount (x) and, in yzw, the direction to the point of the
+// rectangle nearest the mirror direction (for the highlight).
+fn area_light(light: SceneLight, world: vec3<f32>, n: vec3<f32>, to_eye: vec3<f32>) -> vec4<f32> {
+    let c = light.pos.xyz;
+    let fwd = normalize(light.dir.xyz);
+    let ax = light.axis.xyz;
+    let ay = normalize(cross(fwd, ax)) * light.axis.w;
+    var sum = 0.0;
+    for (var j = 0; j < 4; j = j + 1) {
+        for (var i = 0; i < 4; i = i + 1) {
+            let u = (f32(i) + 0.5) / 4.0 * 2.0 - 1.0;
+            let v = (f32(j) + 0.5) / 4.0 * 2.0 - 1.0;
+            let p = c + ax * u + ay * v;
+            let d = p - world;
+            let dist = max(length(d), 1e-3);
+            let l = d / dist;
+            let emit = dot(-l, fwd);
+            if (emit > 0.0) {
+                var att = 1.0;
+                if (light.params.x > 0.0) {
+                    let t = clamp(1.0 - dist / light.params.x, 0.0, 1.0);
+                    att = t * t;
+                }
+                sum = sum + max(dot(n, l), 0.0) * sqrt(emit) * att;
+            }
+        }
+    }
+    // The highlight: where the mirror ray meets the light's plane, clamped
+    // to the rectangle.
+    let r = reflect(-to_eye, n);
+    let denom = dot(r, fwd);
+    var q = c;
+    if (abs(denom) > 1e-4) {
+        let t = dot(c - world, fwd) / denom;
+        if (t > 0.0) {
+            q = world + r * t;
+        }
+    }
+    let rel = q - c;
+    let wx = max(length(ax), 1e-4);
+    let wy = max(light.axis.w, 1e-4);
+    let px = clamp(dot(rel, ax / wx), -wx, wx);
+    let py = clamp(dot(rel, ay / wy), -wy, wy);
+    let nearest = c + ax / wx * px + ay / wy * py;
+    return vec4<f32>(sum / 16.0, normalize(nearest - world));
+}
+
+// Lighting from the scene's lights: Dome ambient plus each direct light, each
+// shadowed by its own shadow map when it has one.
 fn scene_lighting(base: vec3<f32>, world: vec3<f32>, n: vec3<f32>, to_eye: vec3<f32>) -> vec3<f32> {
     let sky = 0.5 + 0.5 * n.y;
     // Light arriving at the surface (irradiance), and highlights.
@@ -45,43 +129,32 @@ fn scene_lighting(base: vec3<f32>, world: vec3<f32>, n: vec3<f32>, to_eye: vec3<
     for (var i = 0; i < count; i = i + 1) {
         let light = cam.lights[i];
         let kind = light.pos.w;
+        var diffuse: f32;
         var l: vec3<f32>;
         var att = 1.0;
-        var dist = 1.0;
-        if (kind > 2.5) {
-            l = normalize(-light.dir.xyz);
-        } else {
-            let d = light.pos.xyz - world;
-            dist = max(length(d), 1e-3);
-            l = d / dist;
-            if (light.params.x > 0.0) {
-                att = clamp(1.0 - (dist / light.params.x) * (dist / light.params.x), 0.0, 1.0);
-            }
-            if (kind > 0.5 && kind < 1.5) {
-                // Spot cone.
-                att = att * smoothstep(light.dir.w, light.color.w, dot(-l, normalize(light.dir.xyz)));
-            }
-            if (kind > 1.5) {
-                // Area: one-sided, towards its +Z.
-                att = att * clamp(dot(-l, normalize(light.dir.xyz)) * 1.5 + 0.15, 0.0, 1.0);
-            }
-        }
-        var ndl = dot(n, l);
         if (kind > 1.5 && kind < 2.5) {
-            // A large source near the surface wraps light further round.
-            let wrap = clamp(light.params.y / dist, 0.0, 0.6);
-            ndl = (ndl + wrap) / (1.0 + wrap);
+            let a = area_light(light, world, n, to_eye);
+            diffuse = a.x;
+            l = a.yzw;
+        } else {
+            let reach = light_reach(light, world);
+            l = reach.xyz;
+            att = reach.w;
+            diffuse = max(dot(n, l), 0.0);
         }
-        let diffuse = max(ndl, 0.0);
         if (diffuse <= 0.0 || att <= 0.0) {
             continue;
         }
         var shade = 1.0;
-        if (i == 0) {
-            shade = shadow_factor(world, n);
+        let map = i32(light.params.w) - 1;
+        if (map >= 0) {
+            shade = shadow_at(map, world, n);
         }
         let h = normalize(l + to_eye);
-        let spec = pow(max(dot(n, h), 0.0), 40.0) * 0.16;
+        var spec = pow(max(dot(n, h), 0.0), 40.0) * 0.16;
+        if (kind > 1.5 && kind < 2.5) {
+            spec = spec * clamp(dot(n, l) * 2.0, 0.0, 1.0);
+        }
         light_in = light_in + light.color.rgb * att * shade * diffuse;
         highlight = highlight + light.color.rgb * att * shade * spec;
     }
@@ -90,31 +163,56 @@ fn scene_lighting(base: vec3<f32>, world: vec3<f32>, n: vec3<f32>, to_eye: vec3<
     return base * pow(light_in, vec3<f32>(0.65)) + highlight;
 }
 
-@group(0) @binding(0) var<uniform> cam: Camera;
-@group(0) @binding(1) var shadow_map: texture_depth_2d;
-@group(0) @binding(2) var shadow_sampler: sampler_comparison;
-
-// 1 where the key light reaches `world`, 0 in full shadow (3x3 PCF).
-fn shadow_factor(world: vec3<f32>, n: vec3<f32>) -> f32 {
-    if (cam.fx.x < 0.5) {
+// 1 where shadow map `k`'s light reaches `world`, 0 in full shadow (PCF,
+// wider for soft lights).
+fn shadow_at(k: i32, world: vec3<f32>, n: vec3<f32>) -> f32 {
+    if (k >= i32(cam.fx.x)) {
         return 1.0;
     }
-    let texel = cam.fx.z;
-    let p = cam.light_view_proj * vec4<f32>(world + n * texel * 2.0, 1.0);
-    let uv = vec2<f32>(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || p.z < 0.0) {
+    let info = cam.shadow_info[k];
+    var texel = info.x;
+    if (info.y > 0.5) {
+        // Perspective maps: texels grow with distance from the light.
+        var origin = vec3<f32>(0.0);
+        let li = i32(info.w);
+        if (li >= 0) {
+            origin = cam.lights[li].pos.xyz;
+        }
+        texel = info.x * distance(world, origin);
+    }
+    let p4 = cam.shadow_mats[k] * vec4<f32>(world + n * texel * 2.0, 1.0);
+    if (p4.w <= 1e-6) {
         return 1.0;
     }
-    let z = min(p.z, 1.0) - 0.0008;
+    let p = p4.xyz / p4.w;
+    let local = vec2<f32>(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
+    if (local.x < 0.0 || local.x > 1.0 || local.y < 0.0 || local.y > 1.0 || p.z < 0.0) {
+        return 1.0;
+    }
+    let rect = cam.shadow_rects[k];
+    let uv = rect.xy + local * rect.zw;
     let step = 1.0 / f32(textureDimensions(shadow_map).x);
+    let lo = rect.xy + vec2<f32>(step * 0.5);
+    let hi = rect.xy + rect.zw - vec2<f32>(step * 0.5);
+    var bias = 0.0008;
+    if (info.y > 0.5) {
+        bias = 0.00015;
+    }
+    let z = min(p.z, 1.0) - bias;
+    let radius = info.z;
     var lit = 0.0;
-    for (var y = -1; y <= 1; y = y + 1) {
-        for (var x = -1; x <= 1; x = x + 1) {
-            let o = vec2<f32>(f32(x), f32(y)) * step * 1.2;
-            lit = lit + textureSampleCompareLevel(shadow_map, shadow_sampler, uv + o, z);
+    for (var y = -2; y <= 2; y = y + 1) {
+        for (var x = -2; x <= 2; x = x + 1) {
+            let o = vec2<f32>(f32(x), f32(y)) * 0.5 * step * radius;
+            lit = lit + textureSampleCompareLevel(shadow_map, shadow_sampler, clamp(uv + o, lo, hi), z);
         }
     }
-    return lit / 9.0;
+    return lit / 25.0;
+}
+
+// The default camera light's shadow (the first shadow map).
+fn shadow_factor(world: vec3<f32>, n: vec3<f32>) -> f32 {
+    return shadow_at(0, world, n);
 }
 
 // A soft photo-studio surround: dark floor, bright sky and two softboxes
@@ -236,7 +334,7 @@ fn fs_solid(in: MeshOut) -> @location(0) vec4<f32> {
 @vertex
 fn vs_shadow(in: MeshIn) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.m0, in.m1, in.m2, in.m3);
-    return cam.light_view_proj * (model * vec4<f32>(in.pos, 1.0));
+    return cam.shadow_draw * (model * vec4<f32>(in.pos, 1.0));
 }
 
 // The floor (y = 0) as an invisible shadow catcher: a quad under the grid
@@ -264,15 +362,39 @@ fn vs_catcher(@builtin(vertex_index) i: u32) -> CatcherOut {
 @fragment
 fn fs_catcher(in: CatcherOut) -> @location(0) vec4<f32> {
     let up = vec3<f32>(0.0, 1.0, 0.0);
-    let l = normalize(cam.light_dir.xyz);
-    // Light from below the floor casts nothing onto it.
-    if (l.y <= 0.02) {
-        discard;
+    var dark = 0.0;
+    if (cam.ambient.w > 0.5) {
+        // Each light's shadow, weighted by how much of the floor's light
+        // comes from it.
+        var total = dot(cam.ambient.rgb, vec3<f32>(0.33)) * 0.6 + 0.02;
+        var blocked = 0.0;
+        let count = i32(cam.light_count.x);
+        for (var i = 0; i < count; i = i + 1) {
+            let light = cam.lights[i];
+            var reach = light_reach(light, in.world_pos);
+            var amount = max(reach.y, 0.0) * reach.w;
+            if (light.pos.w > 1.5 && light.pos.w < 2.5) {
+                amount = area_light(light, in.world_pos, up, up).x;
+            }
+            let w = amount * dot(light.color.rgb, vec3<f32>(0.33));
+            total = total + w;
+            let map = i32(light.params.w) - 1;
+            if (map >= 0 && w > 0.0) {
+                blocked = blocked + w * (1.0 - shadow_at(map, in.world_pos, up));
+            }
+        }
+        dark = blocked / total * 0.55;
+    } else {
+        let l = normalize(cam.light_dir.xyz);
+        // Light from below the floor casts nothing onto it.
+        if (l.y <= 0.02) {
+            discard;
+        }
+        dark = (1.0 - shadow_factor(in.world_pos, up)) * 0.42;
     }
-    let shade = 1.0 - shadow_factor(in.world_pos, up);
     let d = distance(in.world_pos, cam.fade.xyz);
     let fade = 1.0 - smoothstep(cam.fade.w * 0.35, cam.fade.w, d);
-    let a = shade * 0.42 * fade;
+    let a = dark * fade;
     if (a < 0.004) {
         discard;
     }
@@ -297,8 +419,8 @@ fn vs_edge(in: MeshIn) -> MeshOut {
 fn fs_edge(in: MeshOut) -> @location(0) vec4<f32> {
     var rgb = vec3<f32>(0.03, 0.03, 0.035);
     var a = 0.42;
-    if (in.flags.y > 0.5) {
-        // Pure wireframe mode: lines carry the object colour.
+    if (in.flags.y > 0.5 || cam.params.z > 0.5) {
+        // Pure wireframe mode (and line-only objects): lines carry the object colour.
         rgb = mix(in.color.rgb, vec3<f32>(1.0), 0.35);
         a = 0.95;
     }

@@ -1376,6 +1376,7 @@ dependencies = [
  "glam",
  "jpeg-decoder",
  "jpeg-encoder",
+ "naga",
  "png 0.17.16",
  "rayon",
  "serde",
