@@ -22,6 +22,10 @@ struct Post {
 @group(0) @binding(2) var depth_tex: texture_2d<f32>;
 @group(0) @binding(3) var ao_tex: texture_2d<f32>;
 @group(0) @binding(4) var lin: sampler;
+// Reads the depth buffer. A sampler (not textureLoad) because WebGL leaves a
+// depth texture read without one "incomplete" on some drivers (ANGLE on
+// Windows), which reads back nothing.
+@group(0) @binding(5) var nearest: sampler;
 
 struct FsIn {
     @builtin(position) pos: vec4<f32>,
@@ -43,8 +47,9 @@ fn texel_count() -> vec2<i32> {
 }
 
 fn load_depth(p: vec2<i32>) -> f32 {
-    let q = clamp(p, vec2<i32>(0), texel_count() - vec2<i32>(1));
-    return textureLoad(depth_tex, q, 0).r;
+    let n = texel_count();
+    let q = clamp(p, vec2<i32>(0), n - vec2<i32>(1));
+    return textureSampleLevel(depth_tex, nearest, (vec2<f32>(q) + vec2<f32>(0.5)) / vec2<f32>(n), 0.0).r;
 }
 
 // View-space position of the pixel `p` at depth `d`.
@@ -255,7 +260,7 @@ fn blurred_ao(px: vec2<i32>) -> f32 {
             let dq = load_depth(q);
             let zq = ahead(view_pos(q, dq));
             let w = select(0.0, 1.0, abs(zq - z0) < post.params.x * 0.5);
-            sum = sum + textureLoad(ao_tex, q, 0).r * w;
+            sum = sum + textureSampleLevel(ao_tex, nearest, (vec2<f32>(q) + vec2<f32>(0.5)) / vec2<f32>(dims), 0.0).r * w;
             weight = weight + w;
         }
     }

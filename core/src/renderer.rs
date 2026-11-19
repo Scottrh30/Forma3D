@@ -801,6 +801,7 @@ pub struct GpuResources {
     composite_layout: wgpu::BindGroupLayout,
     shadow_sampler: wgpu::Sampler,
     linear_sampler: wgpu::Sampler,
+    nearest_sampler: wgpu::Sampler,
     slots: Vec<Slot>,
     meshes: HashMap<u64, GpuMesh>,
     instances: wgpu::Buffer,
@@ -904,7 +905,11 @@ impl GpuResources {
         let post_size = std::mem::size_of::<PostUniform>();
         let ssao_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("forma3d_ssao_layout"),
-            entries: &[uniform_entry(0, vf, post_size), texture_entry(2, DEPTH_AS_FLOAT)],
+            entries: &[
+                uniform_entry(0, vf, post_size),
+                texture_entry(2, DEPTH_AS_FLOAT),
+                sampler_entry(5, wgpu::SamplerBindingType::NonFiltering),
+            ],
         });
         let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("forma3d_composite_layout"),
@@ -914,6 +919,7 @@ impl GpuResources {
                 texture_entry(2, DEPTH_AS_FLOAT),
                 texture_entry(3, wgpu::TextureSampleType::Float { filterable: true }),
                 sampler_entry(4, wgpu::SamplerBindingType::Filtering),
+                sampler_entry(5, wgpu::SamplerBindingType::NonFiltering),
             ],
         });
         let pipeline_layout = |label: &str, group: &wgpu::BindGroupLayout| {
@@ -1190,7 +1196,17 @@ impl GpuResources {
             ..Default::default()
         });
 
+        let nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("forma3d_nearest_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
         GpuResources {
+            nearest_sampler,
             solid,
             solid_culled,
             edge,
@@ -1337,6 +1353,10 @@ impl GpuResources {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(&depth),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.nearest_sampler),
+                },
             ],
         });
         let composite_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1362,6 +1382,10 @@ impl GpuResources {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::Sampler(&self.linear_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.nearest_sampler),
                 },
             ],
         });
