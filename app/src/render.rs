@@ -787,7 +787,11 @@ pub fn PictureViewer() -> impl IntoView {
                     />
                 })}
                 <span class="hint pv-info">{info}</span>
-                {move || busy().then(|| view! { <button class="btn" on:click=move |_| stop(app)>"Stop"</button> })}
+                {move || {
+                    // Re-checked whenever a render reports progress or ends.
+                    app.render.track();
+                    busy().then(|| view! { <button class="btn" on:click=move |_| stop(app)>"Stop"</button> })
+                }}
                 <button class="btn" title="Save the shown picture as PNG" on:click=save>"Save..."</button>
                 <button class="btn" title="Forget every picture" on:click=move |_| ui.update(|u| { u.shots.retain(|s| !s.done); u.compare = None; })>"Clear"</button>
             </div>
