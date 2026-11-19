@@ -232,16 +232,29 @@ compared (November 2026) and none was worth rewriting the interface for. Highlig
   **Interactive Render Region** (Alt+R) keeps re-rendering the middle of the view as you work; **Render to Picture
   Viewer** (Shift+R) renders the frames in Render Settings and keeps every picture in the **Picture Viewer**
   (history, passes, frames, zoom, A/B compare with a split, Save as PNG). **Edit Render Settings** (Ctrl+B):
-  - Renderer: **Standard** (direct light, hard or soft shadows, Fresnel reflections, ambient light) or
-    **Physical** (path tracing with global illumination, area shadows and depth of field), both ray traced
-    through a bounding volume hierarchy; or **Viewport (Hardware)**, the viewport's own GPU shading.
+  - Renderer: **Standard** (ray tracing: direct light, hard or soft shadows, Fresnel reflections, refraction,
+    ambient light) or **Physical** (path tracing with global illumination, blurry reflections, area shadows and depth
+    of field), both ray traced through a bounding volume hierarchy; or **Viewport (Hardware)**, the viewport's own GPU
+    shading. The dialog lists its sections down the side; only the settings the chosen renderer uses are shown.
   - Output size with presets, frame range (current, all, manual with step); saving as PNG, 16-bit PNG or JPEG with
     file name tokens (`$prj $camera $take $frame $pass $res $width $height $renderer $date $time`). Relative names go
     next to the project (or into Pictures/Forma3D); in a browser the files download.
   - Multi-Pass: Diffuse, Specular, Shadow, Ambient Occlusion, Depth, Normal, Object ID, Material ID and Alpha.
-  - Anti-aliasing (samples, Box or Gaussian filter), ray depth, background colour, Ambient Occlusion, **Sketch and
-    Toon** (banded shading with outlines) or **Contour** lines, Material Override, and colour management (view
-    transform Standard, ACES, Filmic or Raw; working space linear sRGB or ACEScg; exposure).
+  - **Anti-Aliasing** (Standard): **None** (one ray per pixel), **Geometry** (a fixed number of samples) or **Best**
+    (adaptive: Min Level everywhere, up to Max Level, 1x1 to 16x16, where the noise is above Threshold, plus the
+    pixels around them). Both engines filter with **Cube**, **Gauss**, **Mitchell**, **Catmull**, **Sinc**, **Triangle**
+    or **PAL/NTSC** (each sample spreads over the pixels its filter reaches), optionally at a **Custom Size**, and can
+    **Clip Colour Values** so very bright spots don't sparkle.
+  - **Physical**: **Sampling Quality** Low, Medium, High or Custom; **Sampler** **Fixed**, **Adaptive** (refines only
+    noisy pixels, spending Shading Subdivisions Max there) or **Progressive** (a pass count, a time limit, or until you
+    press Stop, which keeps the picture); Sampling, Shading (min/max), Blurriness subdivisions and Shading Error
+    Threshold (Custom); **Depth of Field** on or off.
+  - **Options**: Transparency, Refraction, Reflections, Shadows (with **Area Shadow Samples**), Blurriness, Limit
+    Reflections to Sky, Ray Depth, Reflection Depth, Shadow Depth, Ray Threshold, Global Brightness, Default Light,
+    Textures, Post Effects and the background colour. **Global Illumination** (both engines) with its Diffuse Depth.
+  - **Effects**: Ambient Occlusion (distance, strength, samples), **Glow** (threshold, radius, strength),
+    **Vignette**, **Sketch and Toon** (banded shading with outlines) or **Contour** lines; Material Override, and
+    colour management (view transform Standard, ACES, Filmic or Raw; working space linear sRGB or ACEScg; exposure).
 
   The desktop app renders on every CPU core in the background; a browser renders in small slices so the
   interface keeps working. The **Render Queue** renders projects one after another, each with the settings it
