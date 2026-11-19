@@ -127,7 +127,7 @@ fn ssr(px: vec2<i32>, frag: vec2<f32>) -> vec4<f32> {
     let reach = post.params.x / 0.045 * 1.2;
     let steps = 40;
     let step_len = reach / f32(steps);
-    let start = p + n * step_len * 0.2;
+    let start = p + n * step_len * 0.6;
     var t = step_len * (0.5 + hash(frag));
     var hit_uv = vec2<f32>(-1.0);
     var prev = 0.0;
@@ -141,7 +141,8 @@ fn ssr(px: vec2<i32>, frag: vec2<f32>) -> vec4<f32> {
         let sd = load_depth(sp);
         if (sd < 1.0) {
             let behind = ahead(s) - ahead(view_pos(sp, sd));
-            if (behind > 0.0 && behind < step_len * 2.5) {
+            // Ignore the surface's own pixels right at the start.
+            if (behind > 0.0 && behind < step_len * 2.5 && t > step_len * 1.5) {
                 // Refine between the last two steps.
                 var lo = prev;
                 var hi = t;
