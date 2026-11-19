@@ -1806,7 +1806,8 @@ pub fn execute(ed: &mut Editor, cmd: Cmd) -> Option<AppAction> {
     None
 }
 
-/// Commands that only change what the views show: no undo step.
+/// Commands that only change what the views show (or open a view dialog):
+/// no undo step.
 fn view_only(c: Cmd) -> bool {
     matches!(
         c,
@@ -1864,9 +1865,10 @@ fn exec(app: App, c: Cmd, confirmed: bool) {
         });
     }
     let action = if view_only(c) {
-        app.view(|e| execute(e, c));
+        // View changes make no undo step, but may still open a dialog.
+        let action = app.view(|e| execute(e, c));
         app.rev.update(|r| *r += 1);
-        None
+        action
     } else {
         app.act(|e| execute(e, c))
     };
@@ -2119,6 +2121,20 @@ fn save(app: App, save_as: bool) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod view_dialog_tests {
+    use super::*;
+
+    /// View commands that open a dialog hand back its action.
+    #[test]
+    fn configure_view_and_load_background_ask_for_their_dialogs() {
+        let mut ed = Editor::new(forma3d_core::scene::Scene::demo());
+        assert!(view_only(Cmd::ConfigureView) && view_only(Cmd::LoadBackground));
+        assert!(matches!(execute(&mut ed, Cmd::ConfigureView), Some(AppAction::ConfigureView)));
+        assert!(matches!(execute(&mut ed, Cmd::LoadBackground), Some(AppAction::LoadBackground)));
+    }
 }
 
 #[cfg(test)]
