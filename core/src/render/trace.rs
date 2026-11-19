@@ -1,7 +1,7 @@
 //! The ray tracer: one sample per pixel per pass, rows at a time.
 
 use super::build::{RLight, RLightKind, RenderScene, from_working, to_working};
-use super::{Engine, Filter, RenderSettings, SketchMode};
+use super::{Engine, RenderSettings, SamplingPlan, SketchMode};
 use crate::scene_camera::CameraPose;
 use glam::Vec3;
 use std::f32::consts::TAU;
@@ -66,11 +66,13 @@ pub(crate) struct Sample {
     pub normal: Vec3,
     pub object: i32,
     pub material: i32,
-    /// The filter's weight for this sample.
-    pub w: f32,
+    /// Where in its pixel the sample was taken, from the centre (-0.5..0.5).
+    pub offset: (f32, f32),
+    /// Adaptive sampling left this pixel out of the pass.
+    pub skip: bool,
 }
 
-/// The sums of every pixel's samples.
+/// The sums of every pixel's samples, weighted by the filter.
 #[derive(Clone, Default)]
 pub struct Buffers {
     pub beauty: Vec<Vec3>,
@@ -85,6 +87,11 @@ pub struct Buffers {
     pub depth: Vec<f32>,
     pub object: Vec<i32>,
     pub material: Vec<i32>,
+    /// Each pixel's own samples: count, and the sum and sum of squares of
+    /// their brightness (for adaptive sampling).
+    pub count: Vec<u32>,
+    pub lum: Vec<f32>,
+    pub lum2: Vec<f32>,
 }
 
 impl Buffers {
@@ -101,7 +108,28 @@ impl Buffers {
             depth: vec![f32::INFINITY; n],
             object: vec![-1; n],
             material: vec![-1; n],
+            count: vec![0; n],
+            lum: vec![0.0; n],
+            lum2: vec![0.0; n],
         }
+    }
+}
+
+/// Where a ray is in its path: how deep, through how many reflections and
+/// diffuse bounces, and how much it can still add to the picture.
+#[derive(Clone, Copy)]
+struct Path {
+    depth: u32,
+    reflections: u32,
+    bounces: u32,
+    weight: f32,
+}
+
+impl Path {
+    const CAMERA: Path = Path { depth: 0, reflections: 0, bounces: 0, weight: 1.0 };
+
+    fn next(self, weight: f32) -> Path {
+        Path { depth: self.depth + 1, weight: self.weight * weight, ..self }
     }
 }
 
@@ -116,6 +144,13 @@ pub struct Renderer {
     pass: u32,
     row: u32,
     pub buffers: Buffers,
+    plan: SamplingPlan,
+    /// Adaptive: the pixels this pass samples (None: all of them).
+    active: Option<Vec<bool>>,
+    /// Adaptive sampling found nothing left to refine.
+    converged: bool,
+    /// Time spent so far (set by the host), for a Progressive time limit.
+    elapsed_ms: f64,
 }
 
 impl Renderer {
@@ -130,9 +165,11 @@ impl Renderer {
             None => [0, 0, width, height],
         };
         let camera = if side == 0.0 { scene.camera } else { scene.camera.eye_offset(side) };
+        let settings = settings.sanitized().with_quality();
         Renderer {
             scene,
-            settings: settings.sanitized(),
+            plan: settings.plan(),
+            settings,
             width,
             height,
             region,
@@ -140,19 +177,35 @@ impl Renderer {
             pass: 0,
             row: 0,
             buffers: Buffers::new((width * height) as usize),
+            active: None,
+            converged: false,
+            elapsed_ms: 0.0,
         }
     }
 
+    /// The most passes this render may take.
     pub fn total_passes(&self) -> u32 {
-        self.settings.samples
+        self.plan.max
     }
 
     pub fn passes_done(&self) -> u32 {
         self.pass.min(self.total_passes())
     }
 
+    pub fn plan(&self) -> SamplingPlan {
+        self.plan
+    }
+
+    /// Tells the renderer how long it has been running (for time limits).
+    pub fn set_elapsed_ms(&mut self, ms: f64) {
+        self.elapsed_ms = ms;
+    }
+
     pub fn done(&self) -> bool {
-        self.pass >= self.total_passes()
+        if self.pass >= self.plan.max || self.converged {
+            return true;
+        }
+        matches!(self.plan.time_limit_ms, Some(limit) if self.pass >= 1 && self.elapsed_ms >= limit)
     }
 
     fn rows(&self) -> u32 {
@@ -163,13 +216,88 @@ impl Renderer {
         self.total_passes() as f32 * self.rows() as f32
     }
 
+    /// How far along the render is, 0..1.
+    pub fn fraction_done(&self) -> f32 {
+        if self.done() {
+            return 1.0;
+        }
+        let rows = self.rows().max(1) as f32;
+        let passes = self.pass as f32 + self.row as f32 / rows;
+        match (self.plan.time_limit_ms, self.plan.open_ended) {
+            (Some(limit), _) => (self.elapsed_ms / limit.max(1.0)) as f32,
+            // Never finishes by itself: creep towards the end.
+            (None, true) => passes / (passes + 16.0),
+            // Adaptive renders usually stop well before the maximum.
+            _ => passes / self.plan.max.max(1) as f32,
+        }
+        .clamp(0.0, 0.999)
+    }
+
     pub fn work_done(&self) -> f32 {
-        if self.done() { self.total_work() } else { self.pass as f32 * self.rows() as f32 + self.row as f32 }
+        self.fraction_done() * self.total_work()
+    }
+
+    /// Starts a pass: adaptive sampling picks the pixels that still need
+    /// samples (and stops when none do).
+    fn begin_pass(&mut self) {
+        self.active = None;
+        let Some(threshold) = self.plan.threshold else {
+            return;
+        };
+        if self.pass < self.plan.min || self.pass >= self.plan.max {
+            return;
+        }
+        let b = &self.buffers;
+        let mut any = false;
+        let mut active = vec![false; (self.width * self.height) as usize];
+        for y in self.region[1]..self.region[3] {
+            for x in self.region[0]..self.region[2] {
+                let i = (y * self.width + x) as usize;
+                let n = b.count[i] as f32;
+                if n < 2.0 {
+                    active[i] = true;
+                    any = true;
+                    continue;
+                }
+                let mean = b.lum[i] / n;
+                let var = (b.lum2[i] / n - mean * mean).max(0.0);
+                // The error of the mean, relative to how bright the pixel looks.
+                let err = (var / n).sqrt() / (mean + 0.1);
+                if err > threshold {
+                    active[i] = true;
+                    any = true;
+                }
+            }
+        }
+        if any {
+            // Refine around noisy pixels too, so edges come out evenly.
+            let mut grown = active.clone();
+            for y in self.region[1]..self.region[3] {
+                for x in self.region[0]..self.region[2] {
+                    let i = (y * self.width + x) as usize;
+                    if !active[i] {
+                        continue;
+                    }
+                    for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                        let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                        if nx >= self.region[0] as i32 && ny >= self.region[1] as i32 && nx < self.region[2] as i32 && ny < self.region[3] as i32 {
+                            grown[(ny as u32 * self.width + nx as u32) as usize] = true;
+                        }
+                    }
+                }
+            }
+            self.active = Some(grown);
+        } else {
+            self.converged = true;
+        }
     }
 
     /// Renders up to `rows` rows of the current pass.
     pub fn step(&mut self, rows: u32) {
         for _ in 0..rows.max(1) {
+            if self.row == 0 {
+                self.begin_pass();
+            }
             if self.done() {
                 return;
             }
@@ -191,6 +319,9 @@ impl Renderer {
     /// Renders the rest of the current pass (on every core with the
     /// `parallel` feature).
     pub fn render_pass(&mut self) {
+        if self.row == 0 {
+            self.begin_pass();
+        }
         if self.done() {
             return;
         }
@@ -210,48 +341,83 @@ impl Renderer {
         self.pass += 1;
     }
 
+    /// Adds a row of samples: each spreads over the pixels its filter reaches.
     fn store(&mut self, y: u32, row: &[Sample]) {
+        let (fw, fh) = self.settings.filter_size();
+        let filter = self.settings.filter;
+        let (rx, ry) = ((fw * 0.5).ceil() as i32, (fh * 0.5).ceil() as i32);
+        let [x0, y0, x1, y1] = self.region.map(|v| v as i32);
+        let width = self.width;
         let b = &mut self.buffers;
         for (k, s) in row.iter().enumerate() {
-            let i = (y * self.width + self.region[0] + k as u32) as usize;
-            let w = s.w;
-            b.beauty[i] += s.beauty;
-            b.diffuse[i] += s.diffuse;
-            b.specular[i] += s.specular;
-            b.shadow[i] += s.shadow;
-            b.ao[i] += s.ao;
-            b.alpha[i] += s.alpha;
-            b.normal[i] += s.normal;
-            b.weight[i] += w;
-            if b.object[i] == -1 && s.alpha > 0.0 && b.depth[i].is_infinite() {
-                b.depth[i] = s.depth;
-                b.object[i] = s.object;
-                b.material[i] = s.material;
+            if s.skip {
+                continue;
+            }
+            let px = self.region[0] as i32 + k as i32;
+            let py = y as i32;
+            let own = (py as u32 * width + px as u32) as usize;
+            // The pixel's own statistics (for adaptive sampling).
+            let l = s.beauty.dot(Vec3::new(0.2126, 0.7152, 0.0722)).max(0.0);
+            let l = l / (1.0 + l);
+            b.count[own] += 1;
+            b.lum[own] += l;
+            b.lum2[own] += l * l;
+            if b.object[own] == -1 && s.alpha > 0.0 && b.depth[own].is_infinite() {
+                b.depth[own] = s.depth;
+                b.object[own] = s.object;
+                b.material[own] = s.material;
+            }
+            let (sx, sy) = (px as f32 + 0.5 + s.offset.0, py as f32 + 0.5 + s.offset.1);
+            for qy in (py - ry).max(y0)..=(py + ry).min(y1 - 1) {
+                let wy = filter.weight(qy as f32 + 0.5 - sy, fh);
+                if wy == 0.0 {
+                    continue;
+                }
+                for qx in (px - rx).max(x0)..=(px + rx).min(x1 - 1) {
+                    let w = wy * filter.weight(qx as f32 + 0.5 - sx, fw);
+                    if w == 0.0 {
+                        continue;
+                    }
+                    let i = (qy as u32 * width + qx as u32) as usize;
+                    b.beauty[i] += s.beauty * w;
+                    b.diffuse[i] += s.diffuse * w;
+                    b.specular[i] += s.specular * w;
+                    b.shadow[i] += s.shadow * w;
+                    b.ao[i] += s.ao * w;
+                    b.alpha[i] += s.alpha * w;
+                    b.normal[i] += s.normal * w;
+                    b.weight[i] += w;
+                }
             }
         }
     }
 
-    /// Samples one row (one sample per pixel).
+    /// Samples one row (one sample per pixel, or none where adaptive
+    /// sampling is done with it).
     pub(crate) fn render_row(&self, y: u32, pass: u32) -> Vec<Sample> {
+        // Adaptive passes spend the larger shading budget on noisy pixels.
+        let gi_rays = if self.active.is_some() { self.settings.shading_subdivisions_max } else { self.settings.shading_subdivisions_min };
+        let clip = self.settings.clip_colors.then(|| 2f32.powf(-self.settings.exposure));
         (self.region[0]..self.region[2])
             .map(|x| {
+                if let Some(active) = &self.active
+                    && !active[(y * self.width + x) as usize]
+                {
+                    return Sample { skip: true, ..Default::default() };
+                }
                 let seed = ((pass as u64) << 40) ^ ((y as u64) << 20) ^ x as u64;
                 let mut rng = Rng::new(seed);
                 // The first pass looks through pixel centres (for clean ID
-                // passes); later passes spread over the filter.
-                let (jx, jy, w) = if pass == 0 {
-                    (0.0, 0.0, 1.0)
-                } else {
-                    match self.settings.filter {
-                        Filter::Box => (rng.f() - 0.5, rng.f() - 0.5, 1.0),
-                        Filter::Gaussian => {
-                            let (dx, dy) = (rng.f() * 2.0 - 1.0, rng.f() * 2.0 - 1.0);
-                            (dx * 0.9, dy * 0.9, (-2.0 * (dx * dx + dy * dy)).exp())
-                        }
-                    }
-                };
-                let s = self.sample_pixel(x as f32 + 0.5 + jx, y as f32 + 0.5 + jy, &mut rng);
-                weight(s, w)
+                // passes); later passes spread over the pixel.
+                let (jx, jy) = if pass == 0 { (0.0, 0.0) } else { (rng.f() - 0.5, rng.f() - 0.5) };
+                let mut s = self.sample_pixel(x as f32 + 0.5 + jx, y as f32 + 0.5 + jy, &mut rng, gi_rays);
+                s.offset = (jx, jy);
+                if let Some(cap) = clip {
+                    s.beauty = s.beauty.min(Vec3::splat(cap));
+                    s.diffuse = s.diffuse.min(Vec3::splat(cap));
+                    s.specular = s.specular.min(Vec3::splat(cap));
+                }
+                s
             })
             .collect()
     }
@@ -270,7 +436,7 @@ impl Renderer {
         let ty = tx / aspect;
         let d = (c.forward + right * (nx * tx) + c.up * (ny * ty)).normalize();
         match c.dof {
-            Some((focus, radius)) if radius > 0.0 => {
+            Some((focus, radius)) if radius > 0.0 && self.settings.depth_of_field => {
                 let t = focus / d.dot(c.forward).max(1e-3);
                 let p = c.eye + d * t;
                 let (lx, ly) = disk(rng);
@@ -281,7 +447,11 @@ impl Renderer {
         }
     }
 
-    fn sample_pixel(&self, px: f32, py: f32, rng: &mut Rng) -> Sample {
+    fn physical(&self) -> bool {
+        self.settings.engine == Engine::Physical
+    }
+
+    fn sample_pixel(&self, px: f32, py: f32, rng: &mut Rng, gi_rays: u32) -> Sample {
         let (o, d) = self.camera_ray(px, py, rng);
         let scene = &*self.scene;
         let Some(hit) = scene.bvh.closest(o, d, f32::MAX) else {
@@ -305,7 +475,7 @@ impl Renderer {
         let want_ao = self.settings.ambient_occlusion || self.settings.passes.contains(&super::Pass::AmbientOcclusion);
         let ao = if want_ao { self.ambient_occlusion(p, ng, n, rng) } else { 1.0 };
         s.ao = ao;
-        let (diffuse, specular, shadow) = self.shade(&surf, d, 0, rng, ao);
+        let (diffuse, specular, shadow) = self.shade(&surf, d, Path::CAMERA, rng, ao, gi_rays);
         s.diffuse = diffuse;
         s.specular = specular;
         s.shadow = shadow;
@@ -332,7 +502,7 @@ impl Renderer {
     fn ambient_occlusion(&self, p: Vec3, ng: Vec3, n: Vec3, rng: &mut Rng) -> f32 {
         let dist = self.settings.ao_distance;
         let o = p + ng * self.eps();
-        let rays = 2;
+        let rays = self.settings.ao_subdivisions.max(1);
         let mut open = 0.0;
         for _ in 0..rays {
             let d = cosine_dir(n, rng);
@@ -351,64 +521,82 @@ impl Renderer {
     /// Returns (diffuse, specular, shadow fraction) leaving a surface towards
     /// the viewer (who looks along `d`). Diffuse includes light passing
     /// through transparent surfaces and what the surface gives off.
-    fn shade(&self, hit: &Surface, d: Vec3, depth: u32, rng: &mut Rng, ao: f32) -> (Vec3, Vec3, f32) {
+    /// `gi_rays` is how many bounce rays a camera hit sends (Physical).
+    fn shade(&self, hit: &Surface, d: Vec3, path: Path, rng: &mut Rng, ao: f32, gi_rays: u32) -> (Vec3, Vec3, f32) {
         let s = &self.settings;
         let look = &self.scene.objects[hit.object as usize].surface;
-        let toon = s.sketch == SketchMode::SketchAndToon;
+        let toon = s.sketch == SketchMode::SketchAndToon && s.post_effects;
         let v = -d;
         let ndv = hit.n.dot(v).clamp(1e-4, 1.0);
+        let roughness = if s.blurriness { look.roughness } else { 0.0 };
         let alpha = (look.roughness * look.roughness).max(4e-4);
         // Metals reflect in their own colour; dielectrics a few percent.
         let f0 = Vec3::splat(look.f0).lerp(hit.albedo, look.metalness);
         let fresnel = if toon { Vec3::ZERO } else { f0 + (Vec3::ONE - f0) * (1.0 - ndv).powi(5) };
-        let through = look.transparency * (1.0 - look.metalness);
+        let through = if s.transparency { look.transparency * (1.0 - look.metalness) } else { 0.0 };
         let kd = (1.0 - look.metalness) * (1.0 - through);
-        let (light, highlight, lost, total) = self.direct(hit, v, rng, toon, alpha);
+        let primary = path.depth == 0;
+        let physical = self.physical();
+        let light_rays = if primary { s.shadow_subdivisions } else { 1 };
+        let (light, highlight, lost, total) = self.direct(hit, v, rng, toon, alpha, light_rays);
         let rest = Vec3::ONE - fresnel;
         let mut diffuse = hit.albedo * light * kd * rest + look.emission;
         let mut specular = highlight * fresnel;
-        let physical = s.engine == Engine::Physical;
-        let deeper = depth + 1 < s.max_depth;
-        // Light from all around: bounced (Physical with GI) or even ambient.
+        let deeper = path.depth + 1 < s.max_depth;
+        // Rays worth less than the Ray Threshold aren't traced.
+        let worth = |w: f32| path.weight * w >= s.ray_threshold / 100.0;
+        let o_out = hit.p + hit.ng * self.eps();
+        // Light from all around: bounced (Global Illumination) or even ambient.
         if kd > 0.0 {
-            if physical && s.global_illumination && deeper {
-                let dir = cosine_dir(hit.n, rng);
-                let o = hit.p + hit.ng * self.eps();
-                let incoming = self.radiance(o, dir, depth + 1, rng);
-                diffuse += hit.albedo * incoming * kd * rest;
+            let gi = s.global_illumination && deeper && path.bounces < s.gi_depth && !toon;
+            let w = (hit.albedo * kd).max_element();
+            if gi && worth(w) {
+                let n = if primary && physical { gi_rays.max(1) } else { 1 };
+                let mut sum = Vec3::ZERO;
+                let next = Path { bounces: path.bounces + 1, ..path.next(w) };
+                for _ in 0..n {
+                    let dir = cosine_dir(hit.n, rng);
+                    sum += self.radiance(o_out, dir, next, rng);
+                }
+                diffuse += hit.albedo * (sum / n as f32) * kd * rest;
             } else {
                 let amb = if toon { self.scene.ambient.min(Vec3::splat(0.6)) } else { self.scene.ambient };
                 diffuse += hit.albedo * amb * ao * kd * rest;
             }
         }
         // Reflections: a mirror, or glossy around it for rough surfaces.
-        if s.reflections && !toon && deeper {
+        let w = fresnel.max_element();
+        if s.reflections && !toon && deeper && path.reflections < s.reflection_depth && worth(w) {
             let mirror = d - hit.n * 2.0 * d.dot(hit.n);
-            let r = if look.roughness < 0.03 {
-                mirror
-            } else {
-                let h = ggx_half(hit.n, alpha, rng);
-                let r = d - h * 2.0 * d.dot(h);
-                if r.dot(hit.ng) > 0.0 { r } else { mirror }
-            };
-            let o = hit.p + hit.ng * self.eps();
-            let incoming = if physical { self.radiance(o, r, depth + 1, rng) } else { self.reflect(o, r, depth + 1, rng) };
-            specular += incoming * fresnel;
+            let glossy = roughness >= 0.03;
+            let n = if glossy && primary && physical { s.blurriness_subdivisions } else { 1 };
+            let next = Path { reflections: path.reflections + 1, ..path.next(w) };
+            let mut sum = Vec3::ZERO;
+            for _ in 0..n {
+                let r = if glossy {
+                    let h = ggx_half(hit.n, alpha, rng);
+                    let r = d - h * 2.0 * d.dot(h);
+                    if r.dot(hit.ng) > 0.0 { r } else { mirror }
+                } else {
+                    mirror
+                };
+                sum += if s.reflections_sky_only { self.environment_for(r) } else { self.trace(o_out, r, next, rng) };
+            }
+            specular += sum / n as f32 * fresnel;
         }
         // Light passing through (refracted), tinted by the colour on the way in.
-        if through > 0.0 && !toon && deeper {
-            let eta = if hit.entering { 1.0 / look.ior } else { look.ior };
-            let n = if look.roughness < 0.03 { hit.n } else { ggx_half(hit.n, alpha * 0.5, rng) };
-            let incoming = match refract(d, n, eta) {
-                Some(t) => {
-                    let o = hit.p - hit.ng * self.eps();
-                    if physical { self.radiance(o, t, depth + 1, rng) } else { self.reflect(o, t, depth + 1, rng) }
-                }
-                // Total internal reflection.
-                None => {
-                    let r = d - n * 2.0 * d.dot(n);
-                    let o = hit.p + hit.ng * self.eps();
-                    if physical { self.radiance(o, r, depth + 1, rng) } else { self.reflect(o, r, depth + 1, rng) }
+        if through > 0.0 && !toon && deeper && worth(through) {
+            let next = path.next(through);
+            let incoming = if !s.refraction {
+                // Straight through, without bending.
+                self.trace(hit.p - hit.ng * self.eps(), d, next, rng)
+            } else {
+                let eta = if hit.entering { 1.0 / look.ior } else { look.ior };
+                let n = if roughness < 0.03 { hit.n } else { ggx_half(hit.n, alpha * 0.5, rng) };
+                match refract(d, n, eta) {
+                    Some(t) => self.trace(hit.p - hit.ng * self.eps(), t, next, rng),
+                    // Total internal reflection.
+                    None => self.trace(o_out, d - n * 2.0 * d.dot(n), next, rng),
                 }
             };
             let tint = if hit.entering { hit.albedo } else { Vec3::ONE };
@@ -418,16 +606,31 @@ impl Renderer {
         (diffuse, specular, shadow)
     }
 
+    /// What reflections see with Limit Reflections to Sky: the sky (or the
+    /// background colour).
+    fn environment_for(&self, d: Vec3) -> Vec3 {
+        if self.physical() { self.environment(d) } else { self.background(d) }
+    }
+
+    /// Follows a secondary ray: path traced (Physical) or lit directly
+    /// (Standard).
+    fn trace(&self, o: Vec3, d: Vec3, path: Path, rng: &mut Rng) -> Vec3 {
+        if self.physical() { self.radiance(o, d, path, rng) } else { self.reflect(o, d, path, rng) }
+    }
+
     /// How much light gets from `o` along `d` over `dist`: nothing through
-    /// opaque objects, some through transparent ones.
+    /// opaque objects, some through transparent ones (up to Shadow Depth
+    /// surfaces).
     fn transmittance(&self, o: Vec3, d: Vec3, dist: f32) -> Vec3 {
         let mut through = Vec3::ONE;
         let (mut o, mut left) = (o, dist);
-        for _ in 0..8 {
-            let Some(hit) = self.scene.bvh.closest(o, d, left) else { return through };
+        for _ in 0..self.settings.shadow_depth {
+            let Some(hit) = self.scene.bvh.closest(o, d, left) else {
+                return through;
+            };
             let tri = &self.scene.bvh.tris[hit.tri as usize];
             let obj = &self.scene.objects[tri.object as usize];
-            let t = obj.surface.transparency * (1.0 - obj.surface.metalness);
+            let t = if self.settings.transparency { obj.surface.transparency * (1.0 - obj.surface.metalness) } else { 0.0 };
             if t <= 0.0 {
                 return Vec3::ZERO;
             }
@@ -440,34 +643,35 @@ impl Renderer {
             o += d * step;
             left -= step;
             if left <= 0.0 {
-                break;
+                return through;
             }
         }
-        through
+        // Deeper than Shadow Depth: counts as blocked.
+        Vec3::ZERO
     }
 
     /// What a mirror ray sees (Standard: lit surfaces, no bounces).
-    fn reflect(&self, o: Vec3, d: Vec3, depth: u32, rng: &mut Rng) -> Vec3 {
+    fn reflect(&self, o: Vec3, d: Vec3, path: Path, rng: &mut Rng) -> Vec3 {
         match self.surface(o, d) {
             None => self.background(d),
             Some(hit) => {
-                let (a, b, _) = self.shade(&hit, d, depth, rng, 1.0);
+                let (a, b, _) = self.shade(&hit, d, path, rng, 1.0, 1);
                 a + b
             }
         }
     }
 
     /// Path tracing: all light arriving at `o` from direction `d`.
-    fn radiance(&self, o: Vec3, d: Vec3, depth: u32, rng: &mut Rng) -> Vec3 {
+    fn radiance(&self, o: Vec3, d: Vec3, path: Path, rng: &mut Rng) -> Vec3 {
         match self.surface(o, d) {
             None => self.environment(d),
             Some(hit) => {
                 // Russian roulette past a few bounces.
-                let keep = if depth >= 3 { hit.albedo.max_element().clamp(0.1, 0.95) } else { 1.0 };
+                let keep = if path.depth >= 3 { hit.albedo.max_element().clamp(0.1, 0.95) } else { 1.0 };
                 if keep < 1.0 && rng.f() > keep {
                     return Vec3::ZERO;
                 }
-                let (a, b, _) = self.shade(&hit, d, depth, rng, 1.0);
+                let (a, b, _) = self.shade(&hit, d, path, rng, 1.0, 1);
                 (a + b) / keep
             }
         }
@@ -506,43 +710,52 @@ impl Renderer {
 
     /// Direct light: (diffuse light, highlights, light lost to shadows, light
     /// before shadows).
-    fn direct(&self, hit: &Surface, v: Vec3, rng: &mut Rng, toon: bool, alpha: f32) -> (Vec3, Vec3, f32, f32) {
+    /// `rays` samples soft and area lights several times (Shadow
+    /// Subdivisions).
+    fn direct(&self, hit: &Surface, v: Vec3, rng: &mut Rng, toon: bool, alpha: f32, rays: u32) -> (Vec3, Vec3, f32, f32) {
         let mut light = Vec3::ZERO;
         let mut highlight = Vec3::ZERO;
         let (mut lost, mut total) = (0.0, 0.0);
-        let soft_samples = self.settings.engine == Engine::Physical;
         for l in &self.scene.lights {
             if !l.reaches(hit.object) {
                 continue;
             }
-            let Some((to_light, dist, strength)) = self.sample_light(l, hit.p, rng, soft_samples) else { continue };
-            let ndl = hit.n.dot(to_light);
-            if ndl <= 0.0 || strength <= 0.0 {
-                continue;
-            }
-            let ndl = if toon {
-                let steps = self.settings.toon_steps as f32;
-                ((ndl * steps).ceil() / steps).min(1.0)
-            } else {
-                ndl
-            };
-            let mut c = l.color * strength;
-            let before = (c * ndl).element_sum();
-            if l.shadows && self.settings.shadows {
-                let o = hit.p + hit.ng * self.eps();
-                let t = self.transmittance(o, to_light, dist - self.eps() * 2.0);
-                if t != Vec3::ONE {
-                    let blocked = Vec3::ONE - t;
-                    let shade = Vec3::splat(1.0 - l.density) + l.shadow_color * l.density;
-                    c *= shade * blocked + t;
+            let soft = l.softness > 0.0 || matches!(l.kind, RLightKind::Area);
+            let n = if soft { rays.max(1) } else { 1 };
+            let share = 1.0 / n as f32;
+            for _ in 0..n {
+                let Some((to_light, dist, strength)) = self.sample_light(l, hit.p, rng) else {
+                    continue;
+                };
+                let strength = strength * share;
+                let ndl = hit.n.dot(to_light);
+                if ndl <= 0.0 || strength <= 0.0 {
+                    continue;
                 }
-            }
-            let after = (c * ndl).element_sum();
-            lost += before - after;
-            total += before;
-            light += c * ndl;
-            if !toon {
-                highlight += c * ggx_highlight(hit.n, v, to_light, alpha) * ndl;
+                let ndl = if toon {
+                    let steps = self.settings.toon_steps as f32;
+                    ((ndl * steps).ceil() / steps).min(1.0)
+                } else {
+                    ndl
+                };
+                let mut c = l.color * strength;
+                let before = (c * ndl).element_sum();
+                if l.shadows && self.settings.shadows {
+                    let o = hit.p + hit.ng * self.eps();
+                    let t = self.transmittance(o, to_light, dist - self.eps() * 2.0);
+                    if t != Vec3::ONE {
+                        let blocked = Vec3::ONE - t;
+                        let shade = Vec3::splat(1.0 - l.density) + l.shadow_color * l.density;
+                        c *= shade * blocked + t;
+                    }
+                }
+                let after = (c * ndl).element_sum();
+                lost += before - after;
+                total += before;
+                light += c * ndl;
+                if !toon {
+                    highlight += c * ggx_highlight(hit.n, v, to_light, alpha) * ndl;
+                }
             }
         }
         (light, highlight, lost, total)
@@ -550,7 +763,7 @@ impl Renderer {
 
     /// A direction to the light from `p`, its distance and how strongly it
     /// reaches `p` (cone, falloff, the parallel light's plane).
-    fn sample_light(&self, l: &RLight, p: Vec3, rng: &mut Rng, _physical: bool) -> Option<(Vec3, f32, f32)> {
+    fn sample_light(&self, l: &RLight, p: Vec3, rng: &mut Rng) -> Option<(Vec3, f32, f32)> {
         let soft = l.softness > 0.0;
         match l.kind {
             RLightKind::Directional { parallel } => {
@@ -617,20 +830,6 @@ impl Renderer {
     pub(crate) fn weight_at(&self, i: usize) -> f32 {
         self.buffers.weight[i]
     }
-}
-
-fn weight(mut s: Sample, w: f32) -> Sample {
-    if w != 1.0 {
-        s.beauty *= w;
-        s.diffuse *= w;
-        s.specular *= w;
-        s.shadow *= w;
-        s.ao *= w;
-        s.alpha *= w;
-        s.normal *= w;
-    }
-    s.w = w;
-    s
 }
 
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {

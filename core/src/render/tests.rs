@@ -188,3 +188,138 @@ fn materials_glow_let_light_through_and_texture() {
     assert_eq!(old.roughness, 0.5);
     assert!(old.texture.is_none());
 }
+
+#[test]
+fn every_filter_peaks_at_the_sample_and_ends_at_its_width() {
+    for f in Filter::ALL {
+        let w = f.default_width();
+        let peak = f.weight(0.0, w);
+        assert!(peak > 0.8 && (1..40).all(|k| f.weight(k as f32 * 0.07, w) <= peak + 1e-5), "{f:?} peaks at the centre");
+        assert_eq!(f.weight(w * 0.5 + 0.01, w), 0.0, "{f:?} past its edge");
+        // Over a pixel grid the weights add up to something positive.
+        let sum: f32 = (-8..=8).map(|k| f.weight(k as f32 + 0.25, w)).sum();
+        assert!(sum > 0.5, "{f:?} sums to {sum}");
+    }
+    // Cube keeps each sample inside its own pixel.
+    assert_eq!(Filter::Box.weight(0.49, 1.0), 1.0);
+    assert_eq!(Filter::Box.weight(0.51, 1.0), 0.0);
+    // The sharpening filters have negative lobes; Gauss doesn't.
+    assert!(Filter::Mitchell.weight(1.5, 4.0) < 0.0);
+    assert!(Filter::Sinc.weight(1.3, 6.0) < 0.0);
+    assert!((0..60).all(|k| Filter::Gaussian.weight(k as f32 * 0.025, 3.0) >= 0.0));
+}
+
+#[test]
+fn sampling_plans_follow_the_engine_and_its_settings() {
+    let std = |aa| RenderSettings { engine: Engine::Standard, antialiasing: aa, samples: 9, ..RenderSettings::default() }.plan();
+    assert_eq!((std(AntiAliasing::None).min, std(AntiAliasing::None).max), (1, 1));
+    assert_eq!(std(AntiAliasing::Geometry).max, 9);
+    let best = RenderSettings { antialiasing: AntiAliasing::Best, aa_min_level: AaLevel::L2x2, aa_max_level: AaLevel::L8x8, ..RenderSettings::default() }.plan();
+    assert_eq!((best.min, best.max), (4, 64));
+    assert!(best.threshold.is_some());
+    // A max below the min is raised to it.
+    let odd = RenderSettings { antialiasing: AntiAliasing::Best, aa_min_level: AaLevel::L8x8, aa_max_level: AaLevel::L2x2, ..RenderSettings::default() }.plan();
+    assert_eq!((odd.min, odd.max), (64, 64));
+
+    let phys = |sampler, q| RenderSettings { engine: Engine::Physical, sampler, sampling_quality: q, sampling_subdivisions: 3, ..RenderSettings::default() };
+    assert_eq!(phys(Sampler::Fixed, SamplingQuality::Custom).plan().max, 64);
+    let adaptive = phys(Sampler::Adaptive, SamplingQuality::Custom).plan();
+    assert_eq!((adaptive.min, adaptive.max), (16, 64));
+    // Presets decide the subdivisions unless Custom.
+    assert_eq!(phys(Sampler::Fixed, SamplingQuality::Low).plan().max, 4);
+    assert_eq!(phys(Sampler::Fixed, SamplingQuality::High).plan().max, 64);
+    let high = phys(Sampler::Fixed, SamplingQuality::High).with_quality();
+    assert!(high.shadow_subdivisions > phys(Sampler::Fixed, SamplingQuality::Low).with_quality().shadow_subdivisions);
+    let prog = |mode| RenderSettings { engine: Engine::Physical, sampler: Sampler::Progressive, progressive_mode: mode, progressive_passes: 12, time_limit: 5.0, ..RenderSettings::default() }.plan();
+    assert_eq!(prog(ProgressiveMode::PassCount).max, 12);
+    assert_eq!(prog(ProgressiveMode::TimeLimit).time_limit_ms, Some(5000.0));
+    assert!(prog(ProgressiveMode::Infinite).open_ended);
+}
+
+#[test]
+fn best_anti_aliasing_stops_early_where_the_picture_is_clean() {
+    let mut ed = Editor::new(Scene::new());
+    ed.scene.add_primitive(PrimitiveKind::Cube, None);
+    let s = RenderSettings { antialiasing: AntiAliasing::Best, aa_min_level: AaLevel::L2x2, aa_max_level: AaLevel::L16x16, aa_threshold: 5.0, ..small(Engine::Standard) };
+    let cam = view(&mut ed);
+    let pose = crate::scene_camera::CameraPose::from_editor(&cam, 1.5);
+    let mut job = FrameJob::new(&mut ed, &s, 0, (s.width, s.height), &pose, None);
+    while !job.pass() {}
+    // A plain, evenly lit cube converges long before 256 samples.
+    assert!(job.passes_done() < 256, "took {} passes", job.passes_done());
+    let b = &job.eyes[0].buffers;
+    // Background pixels stop after the minimum; edges get more.
+    let corner = b.count[0];
+    assert_eq!(corner, 4, "the empty corner stops at Min Level");
+    assert!(b.count.iter().max().copied().unwrap_or(0) > 4, "edges are refined");
+    let img = job.images();
+    assert_eq!(centre(&img.passes[0].1)[3], 255);
+}
+
+#[test]
+fn a_progressive_time_limit_ends_the_render() {
+    let mut ed = Editor::new(Scene::new());
+    ed.scene.add_primitive(PrimitiveKind::Cube, None);
+    let s = RenderSettings { sampler: Sampler::Progressive, progressive_mode: ProgressiveMode::TimeLimit, time_limit: 2.0, ..small(Engine::Physical) };
+    let cam = view(&mut ed);
+    let pose = crate::scene_camera::CameraPose::from_editor(&cam, 1.5);
+    let mut job = FrameJob::new(&mut ed, &s, 0, (s.width, s.height), &pose, None);
+    assert!(!job.pass());
+    job.set_elapsed_ms(1000.0);
+    assert!(!job.done());
+    assert!((job.progress() - 0.5).abs() < 0.01);
+    job.set_elapsed_ms(2500.0);
+    assert!(job.done());
+    let inf = RenderSettings { progressive_mode: ProgressiveMode::Infinite, ..s };
+    let mut job = FrameJob::new(&mut ed, &inf, 0, (inf.width, inf.height), &pose, None);
+    for _ in 0..5 {
+        job.pass();
+    }
+    assert!(!job.done() && job.open_ended());
+}
+
+#[test]
+fn options_switch_parts_of_the_render_off() {
+    let mut ed = Editor::new(Scene::new());
+    ed.scene.add_primitive(PrimitiveKind::Cube, None);
+    let lum = |img: &Image| {
+        let c = centre(img);
+        c[0] as u32 + c[1] as u32 + c[2] as u32
+    };
+    let base = small(Engine::Standard);
+    let lit = lum(&render(&mut ed, &base).passes[0].1);
+    // No lights and no default light: only the background (black) is left.
+    let dark = lum(&render(&mut ed, &RenderSettings { default_light: false, ..base.clone() }).passes[0].1);
+    assert!(dark < lit / 4, "{dark} vs {lit}");
+    // Global Brightness scales the light.
+    let dim = lum(&render(&mut ed, &RenderSettings { global_brightness: 30.0, ..base.clone() }).passes[0].1);
+    assert!(dim < lit, "{dim} vs {lit}");
+    // Glow brightens around bright pixels; Vignette darkens the corners.
+    let bright = RenderSettings { exposure: 3.0, ..base.clone() };
+    let plain = render(&mut ed, &bright).passes[0].1.clone();
+    let glow = render(&mut ed, &RenderSettings { glow: true, glow_threshold: 0.5, glow_strength: 200.0, ..bright.clone() }).passes[0].1.clone();
+    let sum = |img: &Image| img.pixels.chunks(4).map(|p| p[0] as u32).sum::<u32>();
+    assert!(sum(&glow) > sum(&plain));
+    let vig = render(&mut ed, &RenderSettings { vignette: 100.0, background: [0.5; 3], ..base.clone() }).passes[0].1.clone();
+    let flat = render(&mut ed, &RenderSettings { background: [0.5; 3], ..base.clone() }).passes[0].1.clone();
+    assert!(vig.get(0, 0)[0] < flat.get(0, 0)[0], "corner darker");
+    // Post Effects off turns Glow back off.
+    let off = render(&mut ed, &RenderSettings { glow: true, glow_threshold: 0.5, glow_strength: 200.0, post_effects: false, ..bright }).passes[0].1.clone();
+    assert_eq!(sum(&off), sum(&plain));
+}
+
+#[test]
+fn wide_filters_soften_and_custom_sizes_apply() {
+    let mut ed = Editor::new(Scene::new());
+    ed.scene.add_primitive(PrimitiveKind::Cube, None);
+    let edge_softness = |s: &RenderSettings, ed: &mut Editor| {
+        let img = render(ed, s).passes[0].1.clone();
+        // Count partly covered pixels along the middle row.
+        let y = img.height / 2;
+        (0..img.width).filter(|&x| (20..235).contains(&img.get(x, y)[3])).count()
+    };
+    let cube = RenderSettings { filter: Filter::Box, samples: 8, ..small(Engine::Standard) };
+    let wide = RenderSettings { filter: Filter::Gaussian, custom_filter_size: true, filter_width: 6.0, filter_height: 6.0, ..cube.clone() };
+    assert!(edge_softness(&wide, &mut ed) > edge_softness(&cube, &mut ed));
+    assert_eq!(RenderSettings { filter: Filter::Sinc, ..RenderSettings::default() }.filter_size(), (6.0, 6.0));
+}

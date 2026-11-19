@@ -18,7 +18,9 @@ pub enum RLightKind {
     Area,
     /// Light from one direction; `parallel` lights only what's in front of
     /// the light's plane.
-    Directional { parallel: bool },
+    Directional {
+        parallel: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -167,7 +169,7 @@ pub fn build_scene(ed: &mut crate::editor::Editor, settings: &RenderSettings, fr
                 transparency: m.transparency,
                 ior: m.ior,
                 emission: to_working(srgb_to_linear(m.emission) * m.emission_strength, w),
-                texture: m.texture.as_ref().and_then(|t| {
+                texture: m.texture.as_ref().filter(|_| settings.textures).and_then(|t| {
                     let img = images.entry(m.id).or_insert_with(|| t.image().ok().map(std::sync::Arc::new)).clone()?;
                     Some((img, t.clone()))
                 }),
@@ -235,7 +237,7 @@ pub fn build_scene(ed: &mut crate::editor::Editor, settings: &RenderSettings, fr
 
     // Without any light, light the scene like the viewport's default light:
     // from above the camera's left shoulder.
-    if lights.is_empty() && ambient == Vec3::ZERO && sky.is_none() {
+    if settings.default_light && lights.is_empty() && ambient == Vec3::ZERO && sky.is_none() {
         let dir = (camera.forward + camera.up * -0.6 + camera.right() * 0.4).normalize_or(Vec3::NEG_Y);
         lights.push(RLight {
             kind: RLightKind::Directional { parallel: false },
@@ -261,22 +263,19 @@ pub fn build_scene(ed: &mut crate::editor::Editor, settings: &RenderSettings, fr
         lo = lo.min(t.a).min(t.a + t.e1).min(t.a + t.e2);
         hi = hi.max(t.a).max(t.a + t.e1).max(t.a + t.e2);
     }
+    // Global Brightness scales every light (the sky's look stays as it is).
+    let gb = settings.global_brightness / 100.0;
+    if gb != 1.0 {
+        for l in &mut lights {
+            l.color *= gb;
+        }
+        ambient *= gb;
+        sky_ambient *= gb;
+    }
     let extent = if lo.x <= hi.x { (hi - lo).length().max(1.0) } else { 100.0 };
     ed.timeline.frame = saved;
     let bvh = Bvh::build(tris);
-    RenderScene {
-        bvh,
-        objects: robjects,
-        lights,
-        ambient: ambient + sky_ambient,
-        sky,
-        sky_ambient,
-        camera,
-        width: size.0,
-        height: size.1,
-        extent,
-        working: w,
-    }
+    RenderScene { bvh, objects: robjects, lights, ambient: ambient + sky_ambient, sky, sky_ambient, camera, width: size.0, height: size.1, extent, working: w }
 }
 
 fn push_light(lights: &mut Vec<RLight>, ambient: &mut Vec3, l: &Light, world: glam::Mat4, reach: Vec<bool>, w: WorkingSpace) {

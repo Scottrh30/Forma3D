@@ -101,12 +101,79 @@ fn colour(r: &Renderer, pass: Pass, i: usize, s: &RenderSettings) -> Vec3 {
     r.display_linear(c) * 2f32.powf(s.exposure)
 }
 
+/// Beauty in linear light for every pixel, with the Glow and Vignette
+/// effects (when Post Effects are on).
+fn beauty_linear(r: &Renderer, s: &RenderSettings) -> Vec<Vec3> {
+    let (w, h) = (r.width as usize, r.height as usize);
+    let b = &r.buffers;
+    let mut out: Vec<Vec3> = (0..w * h).map(|i| if b.weight[i] > 0.0 { colour(r, Pass::Beauty, i, s).max(Vec3::ZERO) } else { Vec3::ZERO }).collect();
+    if !s.post_effects {
+        return out;
+    }
+    if s.glow && s.glow_strength > 0.0 {
+        // What's brighter than the threshold, blurred and added back.
+        let mut bright: Vec<Vec3> = out.iter().map(|c| (*c - Vec3::splat(s.glow_threshold)).max(Vec3::ZERO)).collect();
+        let radius = (s.glow_radius * h as f32 / 1080.0).max(1.0);
+        blur(&mut bright, w, h, radius);
+        let k = s.glow_strength / 100.0;
+        for (c, g) in out.iter_mut().zip(&bright) {
+            *c += *g * k;
+        }
+    }
+    if s.vignette > 0.0 {
+        let k = s.vignette / 100.0;
+        let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
+        let reach = (cx * cx + cy * cy).sqrt();
+        for y in 0..h {
+            for x in 0..w {
+                let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                let d = (dx * dx + dy * dy).sqrt() / reach;
+                // A smooth cos^4-like falloff towards the corners.
+                let f = 1.0 - k * (d * d * (3.0 - 2.0 * d)).clamp(0.0, 1.0);
+                out[y * w + x] *= f;
+            }
+        }
+    }
+    out
+}
+
+/// A Gaussian-like blur (three box blurs each way), `radius` pixels.
+fn blur(img: &mut [Vec3], w: usize, h: usize, radius: f32) {
+    let r = ((radius / 3f32.sqrt()).round() as usize).max(1);
+    let mut tmp = vec![Vec3::ZERO; img.len()];
+    for _ in 0..3 {
+        box_pass(img, &mut tmp, w, h, r, true);
+        box_pass(&tmp, img, w, h, r, false);
+    }
+}
+
+fn box_pass(src: &[Vec3], dst: &mut [Vec3], w: usize, h: usize, r: usize, horizontal: bool) {
+    let (lines, len) = if horizontal { (h, w) } else { (w, h) };
+    let at = |line: usize, k: usize| if horizontal { line * w + k } else { k * w + line };
+    let norm = 1.0 / (2 * r + 1) as f32;
+    for line in 0..lines {
+        let mut sum = Vec3::ZERO;
+        for k in 0..=r.min(len - 1) {
+            sum += src[at(line, k)];
+        }
+        // Edges repeat the first pixel.
+        sum += src[at(line, 0)] * r as f32;
+        for k in 0..len {
+            dst[at(line, k)] = sum * norm;
+            let add = src[at(line, (k + r + 1).min(len - 1))];
+            let drop = src[at(line, k.saturating_sub(r))];
+            sum += add - drop;
+        }
+    }
+}
+
 /// One pass as a display image.
 pub fn pass_image(r: &Renderer, pass: Pass, s: &RenderSettings) -> Image {
     let (w, h) = (r.width, r.height);
     let mut img = Image::new(w, h);
     let b = &r.buffers;
     let n = (w * h) as usize;
+    let beauty = (pass == Pass::Beauty).then(|| beauty_linear(r, s));
     // Depth is shown from near (white) to far (black).
     let (mut dmin, mut dmax) = (f32::MAX, f32::MIN);
     if pass == Pass::Depth {
@@ -125,8 +192,9 @@ pub fn pass_image(r: &Renderer, pass: Pass, s: &RenderSettings) -> Image {
         let alpha = b.alpha[i] / weight;
         let px = match pass {
             Pass::Beauty | Pass::Diffuse | Pass::Specular => {
-                let c = view_transform(colour(r, pass, i, s), s.view_transform);
-                let a = if pass == Pass::Beauty && s.alpha { alpha } else { 1.0 };
+                let lin = beauty.as_ref().map_or_else(|| colour(r, pass, i, s), |v| v[i]);
+                let c = view_transform(lin, s.view_transform);
+                let a = if pass == Pass::Beauty && s.alpha { alpha.clamp(0.0, 1.0) } else { 1.0 };
                 [byte(c.x), byte(c.y), byte(c.z), byte(a)]
             }
             Pass::Shadow => {
@@ -160,7 +228,7 @@ pub fn pass_image(r: &Renderer, pass: Pass, s: &RenderSettings) -> Image {
         };
         img.set(i, px);
     }
-    if pass == Pass::Beauty && s.sketch != SketchMode::Off {
+    if pass == Pass::Beauty && s.sketch != SketchMode::Off && s.post_effects {
         outlines(r, s, &mut img);
     }
     img
@@ -261,12 +329,13 @@ pub fn beauty16(r: &Renderer, s: &RenderSettings) -> Vec<u16> {
     let n = (r.width * r.height) as usize;
     let mut out = vec![0u16; n * 4];
     let q = |x: f32| (x.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
+    let beauty = beauty_linear(r, s);
     for i in 0..n {
         let weight = r.buffers.weight[i];
         if weight <= 0.0 {
             continue;
         }
-        let c = view_transform(colour(r, Pass::Beauty, i, s), s.view_transform);
+        let c = view_transform(beauty[i], s.view_transform);
         let a = if s.alpha { r.buffers.alpha[i] / weight } else { 1.0 };
         out[i * 4..i * 4 + 4].copy_from_slice(&[q(c.x), q(c.y), q(c.z), q(a)]);
     }

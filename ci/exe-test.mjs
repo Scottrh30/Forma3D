@@ -82,6 +82,25 @@ if (!dialog) {
 }
 await shot('08-configure-view');
 await page.mouse.click(5, 300);
+
+// Render Settings, then a Physical render to the Picture Viewer.
+await commander('edit render settings');
+await wait(600);
+note(`Render Settings sections: ${(await page.locator('.rs-tab').allInnerTexts()).join(', ')}`);
+await shot('10-render-settings-standard');
+const engine = page.locator('.rsettings select').first();
+if (await engine.count()) {
+  await engine.selectOption('Physical');
+  await wait(600);
+  await shot('11-render-settings-physical');
+}
+await page.mouse.click(5, 300);
+await commander('render to picture viewer');
+const t0 = Date.now();
+await wait(15000);
+await shot('12-physical-render');
+note(`after ${(Date.now() - t0) / 1000}s: ${await status()}`);
+await commander('stop rendering');
 await commander('4 views');
 await shot('09-four-views');
 note(`status: ${await status()}`);

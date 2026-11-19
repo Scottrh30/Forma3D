@@ -392,10 +392,18 @@ async fn browser_loop(app: App, id: u64, req: RenderRequest, cancel: Rc<Cell<boo
         host::yield_now().await;
         let mut job = req.job(frame);
         let mut shown = host::now_ms();
+        let started = host::now_ms();
+        let mut stopped = false;
         loop {
             if cancel.get() {
+                // A render that only ends when stopped keeps its picture.
+                if job.open_ended() && job.passes_done() > 0 {
+                    stopped = true;
+                    break;
+                }
                 return finish(app, id, true, None, ((host::now_ms() - t0) / 1000.0) as f32);
             }
+            job.set_elapsed_ms(host::now_ms() - started);
             let slice = host::now_ms();
             while host::now_ms() - slice < 24.0 {
                 if job.step(2) {
@@ -427,6 +435,9 @@ async fn browser_loop(app: App, id: u64, req: RenderRequest, cancel: Rc<Cell<boo
         }
         let passes = images.passes.iter().map(|(p, img)| (*p, data_url(&r::encode_png8(img)))).collect();
         frame_done(app, id, ShotFrame { frame, passes }, saved);
+        if stopped {
+            return finish(app, id, true, None, ((host::now_ms() - t0) / 1000.0) as f32);
+        }
     }
     finish(app, id, false, None, ((host::now_ms() - t0) / 1000.0) as f32);
 }
@@ -970,14 +981,71 @@ pub fn LightLister() -> impl IntoView {
 // Render Settings
 // ---------------------------------------------------------------------------
 
-const SECTIONS: [(&str, &[&str]); 9] = [
+const SECTIONS: [(&str, &[&str]); 11] = [
     ("Renderer", &["engine"]),
     ("Output", &["width", "height", "frame_range", "frame_from", "frame_to", "frame_step"]),
     ("Save", &["save", "path", "format", "jpeg_quality", "alpha"]),
     ("Multi-Pass", &["passes", "save_passes"]),
-    ("Anti-Aliasing", &["samples", "filter"]),
-    ("Options", &["shadows", "reflections", "max_depth", "global_illumination", "background"]),
-    ("Effects", &["ambient_occlusion", "ao_distance", "ao_strength", "sketch", "line_width", "line_color", "toon_steps"]),
+    (
+        "Physical",
+        &[
+            "depth_of_field",
+            "sampling_quality",
+            "sampler",
+            "sampling_subdivisions",
+            "shading_subdivisions_min",
+            "shading_subdivisions_max",
+            "shading_error_threshold",
+            "blurriness_subdivisions",
+            "progressive_mode",
+            "progressive_passes",
+            "time_limit",
+        ],
+    ),
+    (
+        "Anti-Aliasing",
+        &["antialiasing", "samples", "aa_min_level", "aa_max_level", "aa_threshold", "filter", "custom_filter_size", "filter_width", "filter_height", "clip_colors"],
+    ),
+    (
+        "Options",
+        &[
+            "transparency",
+            "refraction",
+            "reflections",
+            "shadows",
+            "shadow_subdivisions",
+            "blurriness",
+            "reflections_sky_only",
+            "max_depth",
+            "reflection_depth",
+            "shadow_depth",
+            "ray_threshold",
+            "global_brightness",
+            "default_light",
+            "textures",
+            "post_effects",
+            "background",
+        ],
+    ),
+    ("Global Illumination", &["global_illumination", "gi_depth"]),
+    (
+        "Effects",
+        &[
+            "ambient_occlusion",
+            "ao_distance",
+            "ao_strength",
+            "ao_subdivisions",
+            "glow",
+            "glow_threshold",
+            "glow_radius",
+            "glow_strength",
+            "vignette",
+            "sketch",
+            "line_width",
+            "line_color",
+            "toon_steps",
+        ],
+    ),
     ("Material Override", &["material_override", "override_color"]),
     ("Colour Management", &["view_transform", "working_space", "exposure"]),
 ];
@@ -987,12 +1055,17 @@ fn variants<T: serde::Serialize>(v: &[T]) -> Vec<String> {
 }
 
 fn choices(key: &str) -> Option<Vec<String>> {
-    use forma3d_core::render::{Filter, ImageFormat, SketchMode, ViewTransform, WorkingSpace};
+    use forma3d_core::render::{AaLevel, AntiAliasing, Filter, ImageFormat, ProgressiveMode, Sampler, SamplingQuality, SketchMode, ViewTransform, WorkingSpace};
     Some(match key {
         "engine" => variants(&Engine::ALL),
         "frame_range" => variants(&[FrameRange::CurrentFrame, FrameRange::AllFrames, FrameRange::Manual]),
         "format" => variants(&[ImageFormat::Png, ImageFormat::Png16, ImageFormat::Jpeg]),
-        "filter" => variants(&[Filter::Box, Filter::Gaussian]),
+        "filter" => variants(&Filter::ALL),
+        "antialiasing" => variants(&[AntiAliasing::None, AntiAliasing::Geometry, AntiAliasing::Best]),
+        "aa_min_level" | "aa_max_level" => variants(&AaLevel::ALL),
+        "sampling_quality" => variants(&[SamplingQuality::Low, SamplingQuality::Medium, SamplingQuality::High, SamplingQuality::Custom]),
+        "sampler" => variants(&[Sampler::Fixed, Sampler::Adaptive, Sampler::Progressive]),
+        "progressive_mode" => variants(&[ProgressiveMode::PassCount, ProgressiveMode::TimeLimit, ProgressiveMode::Infinite]),
         "sketch" => variants(&[SketchMode::Off, SketchMode::SketchAndToon, SketchMode::Contour]),
         "view_transform" => variants(&ViewTransform::ALL),
         "working_space" => variants(&[WorkingSpace::LinearSrgb, WorkingSpace::AcesCg]),
@@ -1018,6 +1091,18 @@ fn choice_label(v: &str) -> String {
         "Raw" => "Raw (linear)".into(),
         "LinearSrgb" => "Linear sRGB".into(),
         "AcesCg" => "ACEScg".into(),
+        "Box" => "Cube (Still Image)".into(),
+        "Gaussian" => "Gauss (Animation)".into(),
+        "CatmullRom" => "Catmull".into(),
+        "PalNtsc" => "PAL/NTSC".into(),
+        "L1x1" => "1x1".into(),
+        "L2x2" => "2x2".into(),
+        "L4x4" => "4x4".into(),
+        "L8x8" => "8x8".into(),
+        "L16x16" => "16x16".into(),
+        "PassCount" => "Pass Count".into(),
+        "TimeLimit" => "Time Limit".into(),
+        "Infinite" => "Until Stopped".into(),
         other => other.into(),
     }
 }
@@ -1039,11 +1124,49 @@ fn field_label(key: &str) -> &'static str {
         "passes" => "Passes",
         "save_passes" => "Save Passes",
         "samples" => "Samples",
+        "antialiasing" => "Anti-Aliasing",
+        "aa_min_level" => "Min Level",
+        "aa_max_level" => "Max Level",
+        "aa_threshold" => "Threshold",
         "filter" => "Filter",
+        "custom_filter_size" => "Custom Size",
+        "filter_width" => "Filter Width",
+        "filter_height" => "Filter Height",
+        "clip_colors" => "Clip Colour Values",
+        "transparency" => "Transparency",
+        "refraction" => "Refraction",
         "shadows" => "Shadows",
         "reflections" => "Reflections",
+        "blurriness" => "Blurriness",
+        "reflections_sky_only" => "Limit Reflections to Sky",
         "max_depth" => "Ray Depth",
+        "reflection_depth" => "Reflection Depth",
+        "shadow_depth" => "Shadow Depth",
+        "ray_threshold" => "Ray Threshold",
+        "global_brightness" => "Global Brightness",
+        "default_light" => "Default Light",
+        "textures" => "Textures",
+        "post_effects" => "Post Effects",
         "global_illumination" => "Global Illumination",
+        "gi_depth" => "Diffuse Depth",
+        "depth_of_field" => "Depth of Field",
+        "sampling_quality" => "Sampling Quality",
+        "sampler" => "Sampler",
+        "sampling_subdivisions" => "Sampling Subdivisions",
+        "shading_subdivisions_min" => "Shading Subdivisions (Min)",
+        "shading_subdivisions_max" => "Shading Subdivisions (Max)",
+        "shading_error_threshold" => "Shading Error Threshold",
+        "blurriness_subdivisions" => "Blurriness Subdivisions",
+        "shadow_subdivisions" => "Area Shadow Samples",
+        "ao_subdivisions" => "AO Samples",
+        "progressive_mode" => "Progressive Mode",
+        "progressive_passes" => "Pass Count",
+        "time_limit" => "Time Limit",
+        "glow" => "Glow",
+        "glow_threshold" => "Glow Threshold",
+        "glow_radius" => "Glow Radius",
+        "glow_strength" => "Glow Strength",
+        "vignette" => "Vignette",
         "background" => "Background",
         "ambient_occlusion" => "Ambient Occlusion",
         "ao_distance" => "AO Distance",
@@ -1063,9 +1186,10 @@ fn field_label(key: &str) -> &'static str {
 
 fn field_unit(key: &str) -> &'static str {
     match key {
-        "width" | "height" | "line_width" => "px",
+        "width" | "height" | "line_width" | "filter_width" | "filter_height" | "glow_radius" => "px",
         "ao_distance" => "cm",
-        "ao_strength" | "jpeg_quality" => "%",
+        "ao_strength" | "jpeg_quality" | "aa_threshold" | "shading_error_threshold" | "ray_threshold" | "global_brightness" | "glow_strength" | "vignette" => "%",
+        "time_limit" => "s",
         "exposure" => "EV",
         _ => "",
     }
@@ -1084,11 +1208,73 @@ fn hidden(s: &RenderSettings) -> Vec<&'static str> {
     if s.format != ImageFormat::Jpeg {
         h.push("jpeg_quality");
     }
-    if s.engine != Engine::Physical {
-        h.push("global_illumination");
+    use forma3d_core::render::{AntiAliasing, ProgressiveMode, Sampler, SamplingQuality};
+    let physical_only = [
+        "depth_of_field",
+        "sampling_quality",
+        "sampler",
+        "sampling_subdivisions",
+        "shading_subdivisions_min",
+        "shading_subdivisions_max",
+        "shading_error_threshold",
+        "blurriness_subdivisions",
+        "progressive_mode",
+        "progressive_passes",
+        "time_limit",
+    ];
+    if s.engine == Engine::Physical {
+        // Physical decides its samples itself (Sampler); it keeps the filter.
+        h.extend(["antialiasing", "samples", "aa_min_level", "aa_max_level", "aa_threshold"]);
+        let custom = s.sampling_quality == SamplingQuality::Custom;
+        if !custom {
+            h.extend(["sampling_subdivisions", "shading_subdivisions_min", "shading_subdivisions_max", "shading_error_threshold", "blurriness_subdivisions", "shadow_subdivisions"]);
+        }
+        if s.sampler != Sampler::Adaptive {
+            h.extend(["shading_subdivisions_max", "shading_error_threshold"]);
+        }
+        if s.sampler == Sampler::Progressive {
+            h.push("sampling_subdivisions");
+        } else {
+            h.extend(["progressive_mode", "progressive_passes", "time_limit"]);
+        }
+        if s.progressive_mode != ProgressiveMode::PassCount {
+            h.push("progressive_passes");
+        }
+        if s.progressive_mode != ProgressiveMode::TimeLimit {
+            h.push("time_limit");
+        }
+    } else {
+        h.extend(physical_only);
+        if s.antialiasing != AntiAliasing::Geometry {
+            h.push("samples");
+        }
+        if s.antialiasing != AntiAliasing::Best {
+            h.extend(["aa_min_level", "aa_max_level", "aa_threshold"]);
+        }
+        if s.antialiasing == AntiAliasing::None {
+            h.extend(["filter", "custom_filter_size", "filter_width", "filter_height", "clip_colors"]);
+        }
+    }
+    if !s.custom_filter_size {
+        h.extend(["filter_width", "filter_height"]);
+    }
+    if !s.reflections {
+        h.extend(["reflection_depth", "reflections_sky_only"]);
+    }
+    if !s.shadows {
+        h.extend(["shadow_depth", "shadow_subdivisions"]);
+    }
+    if !s.transparency {
+        h.push("refraction");
+    }
+    if !s.global_illumination {
+        h.push("gi_depth");
+    }
+    if !s.glow {
+        h.extend(["glow_threshold", "glow_radius", "glow_strength"]);
     }
     if !s.ambient_occlusion {
-        h.extend(["ao_distance", "ao_strength"]);
+        h.extend(["ao_distance", "ao_strength", "ao_subdivisions"]);
     }
     if s.sketch == SketchMode::Off {
         h.extend(["line_width", "line_color", "toon_steps"]);
@@ -1100,7 +1286,36 @@ fn hidden(s: &RenderSettings) -> Vec<&'static str> {
         h.push("override_color");
     }
     if s.engine == Engine::Viewport {
+        h.extend(physical_only);
         h.extend([
+            "shadow_subdivisions",
+            "antialiasing",
+            "aa_min_level",
+            "aa_max_level",
+            "aa_threshold",
+            "custom_filter_size",
+            "filter_width",
+            "filter_height",
+            "clip_colors",
+            "transparency",
+            "refraction",
+            "blurriness",
+            "reflections_sky_only",
+            "reflection_depth",
+            "shadow_depth",
+            "ray_threshold",
+            "global_brightness",
+            "default_light",
+            "textures",
+            "post_effects",
+            "global_illumination",
+            "gi_depth",
+            "ao_subdivisions",
+            "glow",
+            "glow_threshold",
+            "glow_radius",
+            "glow_strength",
+            "vignette",
             "passes",
             "save_passes",
             "samples",
@@ -1124,6 +1339,10 @@ fn hidden(s: &RenderSettings) -> Vec<&'static str> {
         ]);
     }
     h
+}
+
+fn section_id(title: &str) -> String {
+    format!("rs-{}", title.to_lowercase().replace(' ', "-"))
 }
 
 fn set_setting(app: App, key: &'static str, value: Value) {
@@ -1302,15 +1521,24 @@ pub fn RenderSettingsDialog() -> impl IntoView {
                 });
                 let note = match *title {
                     "Renderer" => Some(match s.engine {
-                        Engine::Standard => "Direct light with hard or soft shadows, reflections and ambient light. Fast and clean.",
-                        Engine::Physical => "Path tracing: light bounces between surfaces, soft area shadows and depth of field. Slower; raise Samples for less noise.",
+                        Engine::Standard => "Ray tracing with direct light, shadows, reflections and refraction; anti-aliasing decides the samples. Fast and clean.",
+                        Engine::Physical => "Path tracing: light bounces between surfaces, soft area shadows, blurry reflections and depth of field. Sampling Quality and the Sampler decide how long it works on noise.",
                         Engine::Viewport => "The viewport's own graphics renderer, as the Perspective view shades it: instant, no anti-aliasing passes.",
                     }),
                     "Save" if s.save => Some(if host::in_tauri() { "Relative names go next to the project (or into Pictures/Forma3D)." } else { "In a browser the files are downloaded." }),
+                    "Anti-Aliasing" if s.engine == Engine::Standard && s.antialiasing == forma3d_core::render::AntiAliasing::Best => {
+                        Some("Every pixel gets Min Level samples; noisy pixels and edges get more, up to Max Level.")
+                    }
+                    "Physical" if s.sampler == forma3d_core::render::Sampler::Progressive && s.progressive_mode == forma3d_core::render::ProgressiveMode::Infinite => {
+                        Some("Keeps refining until you press Stop; the picture so far is kept.")
+                    }
+                    "Physical" if s.sampling_quality != forma3d_core::render::SamplingQuality::Custom => {
+                        Some("Low, Medium and High set the subdivisions; choose Custom to set them yourself.")
+                    }
                     _ => None,
                 };
                 Some(view! {
-                    <h3>{*title}</h3>
+                    <h3 id=section_id(title)>{*title}</h3>
                     {preset}
                     {rows}
                     {note.map(|n| view! { <p class="hint">{n}</p> })}
@@ -1319,12 +1547,39 @@ pub fn RenderSettingsDialog() -> impl IntoView {
             .collect_view()
             .into_any()
     };
+    // The sections this renderer uses, to jump to.
+    let nav = move || {
+        let s = app.read(|e| e.scene.render.clone());
+        let hide = hidden(&s);
+        SECTIONS
+            .iter()
+            .filter(|(_, keys)| keys.iter().any(|k| !hide.contains(k)))
+            .map(|(title, _)| {
+                let id = section_id(title);
+                view! {
+                    <button
+                        class="rs-tab"
+                        on:click=move |_| {
+                            if let Some(el) = document().get_element_by_id(&id) {
+                                el.scroll_into_view();
+                            }
+                        }
+                    >
+                        {*title}
+                    </button>
+                }
+            })
+            .collect_view()
+    };
     view! {
         <Show when=move || app.render.with(|u| u.settings_open)>
             <div class="modal-bg" on:mousedown=move |_| close()>
                 <div class="dialog prefs rsettings" on:mousedown=|ev| ev.stop_propagation()>
                     <h2>"Render Settings"</h2>
-                    <div class="rs-body">{body}</div>
+                    <div class="rs-wrap">
+                        <nav class="rs-nav">{nav}</nav>
+                        <div class="rs-body">{body}</div>
+                    </div>
                     <div class="btns">
                         <button class="btn" on:click=move |_| app.act(|e| { e.scene.render = RenderSettings::default(); e.label("Reset Render Settings"); })>"Reset to Defaults"</button>
                         <button class="btn" on:click=move |_| { close(); start(app, Target::Viewer); }>"Render"</button>

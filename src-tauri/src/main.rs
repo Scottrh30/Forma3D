@@ -245,10 +245,18 @@ fn run_render(app: &tauri::AppHandle, id: u64, req: &RenderRequest, base: &Path,
     for (k, &frame) in req.frames.iter().enumerate() {
         let mut job = req.job(frame);
         let mut shown = Instant::now();
+        let started = Instant::now();
+        let mut stopped = false;
         loop {
             if cancel.load(Ordering::Relaxed) {
+                // A render that only ends when stopped keeps its picture.
+                if job.open_ended() && job.passes_done() > 0 {
+                    stopped = true;
+                    break;
+                }
                 return Ok(());
             }
+            job.set_elapsed_ms(started.elapsed().as_secs_f64() * 1000.0);
             let done = job.pass();
             let preview = (done || shown.elapsed() > Duration::from_millis(350)).then(|| {
                 shown = Instant::now();
@@ -279,6 +287,9 @@ fn run_render(app: &tauri::AppHandle, id: u64, req: &RenderRequest, base: &Path,
         }
         let passes = images.passes.iter().map(|(p, img): &(Pass, _)| (p.id().to_owned(), b64(&encode_png8(img)))).collect();
         let _ = app.emit("render-frame", FrameDone { id, frame, width: images.width, height: images.height, passes, saved, errors });
+        if stopped {
+            break;
+        }
     }
     Ok(())
 }
