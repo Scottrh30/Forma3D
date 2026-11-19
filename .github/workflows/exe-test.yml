@@ -1,0 +1,73 @@
+# Runs the published Forma3D.exe on a Windows machine and clicks through it:
+# shapes, lights, shadows, reflections, layouts, projections, Configure View.
+# The runner has no graphics card (Windows' software renderer stands in), so
+# this checks that the real app starts and works on Windows, not speed.
+name: Test the exe on Windows
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Windows build"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  exe-test:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the published exe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p app-bin
+          gh release download latest --repo "$GITHUB_REPOSITORY" --pattern Forma3D.exe --dir app-bin --clobber
+          ls -la app-bin
+      - name: Install Playwright
+        shell: bash
+        run: |
+          npm init -y > /dev/null
+          npm install playwright@1 > /dev/null
+      - name: Start Forma3D.exe
+        shell: pwsh
+        run: |
+          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
+          $p = Start-Process -FilePath "app-bin/Forma3D.exe" -PassThru
+          "pid=$($p.Id)" | Out-File -Append $env:GITHUB_ENV
+          for ($i = 0; $i -lt 60; $i++) {
+            try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:9222/json/version | Out-Null; break } catch { Start-Sleep 1 }
+          }
+          Get-Process -Id $p.Id | Format-List Name, Id, MainWindowTitle, WorkingSet64
+      - name: Click through the app
+        run: node ci/exe-test.mjs exe-test
+      - name: Screenshot the whole desktop and check the app is still running
+        if: always()
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          New-Item -ItemType Directory -Force exe-test | Out-Null
+          $bmp.Save("exe-test/00-desktop.png")
+          $p = Get-Process -Id $env:pid -ErrorAction SilentlyContinue
+          if ($p) { "Forma3D.exe still running: $($p.MainWindowTitle), $([math]::Round($p.WorkingSet64 / 1MB)) MB" | Tee-Object -Append exe-test/log.txt }
+          else { "Forma3D.exe is not running (crashed or closed)" | Tee-Object -Append exe-test/log.txt; exit 1 }
+          Get-CimInstance Win32_VideoController | Format-List Name, DriverVersion | Out-File -Append exe-test/log.txt
+          [System.Environment]::OSVersion.VersionString | Out-File -Append exe-test/log.txt
+      - name: Publish results
+        if: always()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: exe-test
+          name: Forma3D.exe tested on Windows
+          body: Screenshots and log from running the published Forma3D.exe on a Windows runner (${{ github.sha }}).
+          prerelease: true
+          make_latest: false
+          files: exe-test/*
