@@ -36,7 +36,7 @@ jobs:
       - name: Start Forma3D.exe
         shell: pwsh
         run: |
-          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
+          $env:FORMA3D_DEBUG_PORT = "9222"
           $p = Start-Process -FilePath "app-bin/Forma3D.exe" -PassThru
           "pid=$($p.Id)" | Out-File -Append $env:GITHUB_ENV
           for ($i = 0; $i -lt 60; $i++) {

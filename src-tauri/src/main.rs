@@ -327,6 +327,11 @@ mod tests {
     }
 }
 
+/// The WebView2 debugging port a test run asked for, if any.
+fn debug_port() -> Option<u16> {
+    std::env::var("FORMA3D_DEBUG_PORT").ok()?.trim().parse().ok().filter(|p| *p >= 1024)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -348,6 +353,21 @@ fn main() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(Renders::default())
         .manage(Startup(Mutex::new(files)))
+        // The window is made here rather than from the config alone, so a
+        // test run can open WebView2's debugging port (FORMA3D_DEBUG_PORT)
+        // and drive the real app.
+        .setup(|app| {
+            let config = app.config().app.windows.iter().find(|w| w.label == "main").cloned().ok_or("no main window in the config")?;
+            let mut window = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?;
+            if let Some(port) = debug_port() {
+                // Tauri's own defaults plus the port (setting arguments replaces the defaults).
+                window = window.additional_browser_args(&format!(
+                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={port}"
+                ));
+            }
+            window.build()?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             open_scene,
             read_scene,

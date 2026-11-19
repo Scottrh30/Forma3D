@@ -14,6 +14,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Forma3D",
         "width": 1480,
         "height": 900,
