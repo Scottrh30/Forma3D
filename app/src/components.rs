@@ -24,7 +24,8 @@ fn select_op(m: Mods) -> SelectOp {
 }
 
 pub fn component_mode(ed: &mut Editor, v: &View, inp: &Input, snap: &SnapCtx, p: &mut Painter) {
-    let kind = v.kind;
+    // The panel (tools remember which one they started in).
+    let kind = v.slot;
     let cam = v.cam;
     let Some(id) = ed.edit_target() else {
         p.text(
@@ -51,7 +52,7 @@ pub fn component_mode(ed: &mut Editor, v: &View, inp: &Input, snap: &SnapCtx, p:
             world,
             eye: cam.eye(),
             forward: cam.forward(),
-            ortho: kind.is_ortho(),
+            ortho: v.kind.is_ortho(),
             project: &project,
         };
         let busy = inp.navigating
@@ -252,7 +253,7 @@ pub fn component_mode(ed: &mut Editor, v: &View, inp: &Input, snap: &SnapCtx, p:
                 world,
                 eye: cam.eye(),
                 forward: cam.forward(),
-                ortho: kind.is_ortho(),
+                ortho: v.kind.is_ortho(),
                 project: &project,
             };
             let picked = match mode {
@@ -352,7 +353,7 @@ pub fn component_mode(ed: &mut Editor, v: &View, inp: &Input, snap: &SnapCtx, p:
                     let q = snap_query(
                         &ed.scene,
                         &cam,
-                        kind,
+                        v.kind,
                         &project,
                         m,
                         ray,
@@ -388,7 +389,7 @@ pub fn component_mode(ed: &mut Editor, v: &View, inp: &Input, snap: &SnapCtx, p:
                     world,
                     eye: cam.eye(),
                     forward: cam.forward(),
-                    ortho: kind.is_ortho(),
+                    ortho: v.kind.is_ortho(),
                     project: &project,
                 };
                 let (pts, edges, polys) = pv.in_rect(mode, a.min(now), a.max(now));

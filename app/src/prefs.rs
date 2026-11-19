@@ -139,8 +139,10 @@ impl Prefs {
     /// Settings for a project made with New Project.
     pub fn apply_to_new(&self, ed: &mut Editor) {
         self.apply_to(ed);
-        ed.display = self.shading();
-        ed.view_opts.grid = self.new_grid;
+        ed.set_display_everywhere(self.shading());
+        for p in &mut ed.panels {
+            p.grid = self.new_grid;
+        }
     }
 }
 
@@ -339,8 +341,7 @@ mod tests {
         };
         let mut ed = Editor::new(Scene::new());
         p.apply_to_new(&mut ed);
-        assert_eq!(ed.display, DisplayMode::Quick);
-        assert!(!ed.view_opts.grid);
+        assert!(ed.panels.iter().all(|p| p.display == DisplayMode::Quick && !p.grid));
         assert_eq!(ed.history.limit(), 15);
     }
 }

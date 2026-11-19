@@ -20,3 +20,6 @@ rayon = { version = "1", optional = true }
 [features]
 # Renders on every CPU core (the desktop app's backend turns this on).
 parallel = ["dep:rayon"]
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in", "glsl-out"] }

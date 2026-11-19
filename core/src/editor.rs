@@ -22,17 +22,12 @@ pub const DEFAULT_COLOR: [f32; 3] = [0.64, 0.64, 0.66];
 pub const DEFORMER_COLOR: [f32; 3] = [0.62, 0.42, 0.98];
 pub const DISABLED_COLOR: [f32; 3] = [0.45, 0.45, 0.48];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ViewLayout {
-    Single,
-    Quad,
-}
+pub use crate::views::{PanelOptions, ViewLayout};
 
-/// What the viewports show (the viewport Options and Filter menus).
+/// What every view shows (the viewport Filter menu, Solo and Tessellation).
+/// Each panel's own options are in [`PanelOptions`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewOptions {
-    pub grid: bool,
-    pub compass: bool,
     pub nulls: bool,
     pub deformers: bool,
     pub generators: bool,
@@ -44,13 +39,13 @@ pub struct ViewOptions {
     pub cameras: bool,
     /// Show only the selected objects.
     pub solo: bool,
-    /// Render options: post effects, tessellation, shadows and so on.
-    pub fx: crate::renderer::ViewEffects,
+    /// Smooth display-time tessellation (Options > Tessellation).
+    pub tessellation: bool,
 }
 
 impl Default for ViewOptions {
     fn default() -> Self {
-        ViewOptions { grid: true, compass: true, nulls: true, deformers: true, generators: true, polygons: true, primitives: true, splines: true, lights: true, cameras: true, solo: false, fx: Default::default() }
+        ViewOptions { nulls: true, deformers: true, generators: true, polygons: true, primitives: true, splines: true, lights: true, cameras: true, solo: false, tessellation: false }
     }
 }
 
@@ -486,9 +481,17 @@ pub struct Editor {
     pub tool: Tool,
     pub coord: CoordSystem,
     pub axes: AxisEnabled,
-    pub display: DisplayMode,
     pub layout: ViewLayout,
+    /// One camera per panel ([`ViewKind::ALL`] order); its `kind` is the
+    /// projection the panel shows.
     pub cameras: [Camera; 4],
+    /// Each panel's shading, render options, guides and background.
+    pub panels: [PanelOptions; 4],
+    /// The several-view layout last used (the 1 view / several views button
+    /// goes back to it).
+    pub last_multi: ViewLayout,
+    /// Each panel's earlier cameras, for Undo View.
+    pub view_history: [crate::views::ViewHistory; 4],
     pub single_view: ViewKind,
     /// The view the pointer last interacted with; target of Frame commands.
     pub active_view: ViewKind,
@@ -553,9 +556,11 @@ impl Editor {
             tool: Tool::Move,
             coord: CoordSystem::Object,
             axes: AxisEnabled::default(),
-            display: DisplayMode::GouraudLines,
             layout: ViewLayout::Single,
             cameras: ViewKind::ALL.map(Camera::new),
+            panels: Default::default(),
+            last_multi: ViewLayout::Quad,
+            view_history: Default::default(),
             single_view: ViewKind::Perspective,
             active_view: ViewKind::Perspective,
             meshes: MeshCache::default(),
@@ -1770,6 +1775,7 @@ impl Editor {
     }
 
     pub fn frame_selected(&mut self, view: ViewKind) {
+        self.record_view(view);
         let objs = self.render_objects();
         let sel = self.selection.clone();
         if let Some((c, r)) = Self::bounds_sphere(&objs, |o| sel.contains(&o.id)) {
@@ -1780,6 +1786,7 @@ impl Editor {
     }
 
     pub fn frame_all(&mut self, view: ViewKind) {
+        self.record_view(view);
         let objs = self.render_objects();
         let (c, r) = Self::bounds_sphere(&objs, |_| true).unwrap_or((Vec3::new(0.0, 60.0, 0.0), 400.0));
         self.cameras[view.index()].frame(c, r);
@@ -1817,10 +1824,118 @@ impl Editor {
         self.renaming = None;
         self.drag = None;
         self.frame_all(ViewKind::Perspective);
+        for h in &mut self.view_history {
+            h.clear();
+        }
+    }
+
+    // --- view panels ------------------------------------------------------
+
+    pub fn panel(&self, slot: ViewKind) -> &PanelOptions {
+        &self.panels[slot.index()]
+    }
+
+    /// The options of the panel the pointer last used (the viewport menus
+    /// change these).
+    pub fn active_panel(&self) -> &PanelOptions {
+        &self.panels[self.active_view.index()]
+    }
+
+    pub fn active_panel_mut(&mut self) -> &mut PanelOptions {
+        &mut self.panels[self.active_view.index()]
+    }
+
+    /// The panels the current layout shows.
+    pub fn shown_panels(&self) -> Vec<ViewKind> {
+        self.layout.panels(self.single_view)
+    }
+
+    /// Sets the shading of every panel (new scenes, preferences).
+    pub fn set_display_everywhere(&mut self, mode: DisplayMode) {
+        for p in &mut self.panels {
+            p.display = mode;
+        }
+    }
+
+    /// Remembers a panel's camera before it changes (Undo View).
+    pub fn record_view(&mut self, slot: ViewKind) {
+        let i = slot.index();
+        self.view_history[i].record(self.cameras[i]);
+    }
+
+    /// Undo View: the active panel's previous camera.
+    pub fn undo_view(&mut self) -> bool {
+        let i = self.active_view.index();
+        match self.view_history[i].undo(self.cameras[i]) {
+            Some(c) => {
+                self.cameras[i] = c;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn redo_view(&mut self) -> bool {
+        let i = self.active_view.index();
+        match self.view_history[i].redo(self.cameras[i]) {
+            Some(c) => {
+                self.cameras[i] = c;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn can_undo_view(&self) -> bool {
+        let i = self.active_view.index();
+        self.view_history[i].can_undo(&self.cameras[i])
+    }
+
+    pub fn can_redo_view(&self) -> bool {
+        self.view_history[self.active_view.index()].can_redo()
+    }
+
+    /// Shows another projection in the active panel.
+    pub fn set_projection(&mut self, kind: ViewKind) {
+        let slot = self.active_view;
+        self.record_view(slot);
+        let i = slot.index();
+        self.cameras[i] = self.cameras[i].with_kind(kind);
+        if slot == ViewKind::Perspective && kind != ViewKind::Perspective {
+            self.look_through = None;
+        }
+    }
+
+    /// The views as they are saved in the scene file.
+    pub fn saved_views(&self) -> crate::views::SavedViews {
+        crate::views::SavedViews {
+            layout: self.layout,
+            single_view: self.single_view,
+            active_view: self.active_view,
+            cameras: self.cameras.to_vec(),
+            panels: self.panels.to_vec(),
+        }
+    }
+
+    /// Restores views read from a scene file.
+    pub fn apply_views(&mut self, v: crate::views::SavedViews) {
+        let v = v.sanitized();
+        self.layout = v.layout;
+        self.single_view = v.single_view;
+        self.active_view = v.active_view;
+        for (i, c) in v.cameras.into_iter().take(4).enumerate() {
+            self.cameras[i] = c;
+        }
+        for (i, p) in v.panels.into_iter().take(4).enumerate() {
+            self.panels[i] = p;
+        }
+        for h in &mut self.view_history {
+            h.clear();
+        }
     }
 
     pub fn save_to(&mut self, path: &Path) -> Result<(), String> {
-        let json = self.scene.to_json().map_err(|e| e.to_string())?;
+        let json = self.scene.to_json_with(Some(&self.saved_views())).map_err(|e| e.to_string())?;
         // Write to a temporary file first so a failed write cannot destroy the old save.
         let tmp = path.with_extension("tmp-save");
         std::fs::write(&tmp, json).map_err(|e| format!("{}: {e}", tmp.display()))?;
@@ -1837,7 +1952,7 @@ impl Editor {
     /// The scene as file text, marked as saved to `path`. For hosts that
     /// write the file themselves (the Tauri app).
     pub fn save_json(&mut self, path: PathBuf) -> Result<String, String> {
-        let json = self.scene.to_json().map_err(|e| e.to_string())?;
+        let json = self.scene.to_json_with(Some(&self.saved_views())).map_err(|e| e.to_string())?;
         self.saved = self.scene.clone();
         self.status = format!("Saved {}", path.display());
         self.file_path = Some(path);
@@ -1846,16 +1961,22 @@ impl Editor {
 
     /// Opens scene file text read by the host from `path`.
     pub fn open_json(&mut self, text: &str, path: PathBuf) -> Result<(), String> {
-        let scene = Scene::from_json(text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let (scene, views) = Scene::from_json_with(text).map_err(|e| format!("{}: {e}", path.display()))?;
         self.status = format!("Opened {}", path.display());
         self.replace_scene(scene, Some(path));
+        if let Some(v) = views {
+            self.apply_views(v);
+        }
         Ok(())
     }
 
     pub fn open_from(&mut self, path: &Path) -> Result<(), String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let scene = Scene::from_json(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let (scene, views) = Scene::from_json_with(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         self.replace_scene(scene, Some(path.to_path_buf()));
+        if let Some(v) = views {
+            self.apply_views(v);
+        }
         self.status = format!("Opened {}", path.display());
         Ok(())
     }
@@ -1981,6 +2102,82 @@ mod tests {
 
     fn editor() -> Editor {
         Editor::new(Scene::demo())
+    }
+
+    #[test]
+    fn views_are_saved_with_the_scene_and_come_back() {
+        use crate::views::{Background, BackgroundFit};
+        let mut ed = editor();
+        ed.layout = ViewLayout::ThreeLeft;
+        ed.active_view = ViewKind::Right;
+        ed.set_projection(ViewKind::Left);
+        ed.cameras[ViewKind::Right.index()].ortho_half_height = 321.0;
+        ed.active_panel_mut().safe_frames = true;
+        ed.active_panel_mut().fx.shadows = true;
+        ed.active_panel_mut().display = DisplayMode::Wireframe;
+        ed.active_panel_mut().background = Some(Background {
+            name: "plan.png".into(),
+            data: "AAAA".into(),
+            opacity: 0.5,
+            fit: BackgroundFit::Scene,
+            size: 640.0,
+            offset: [10.0, -5.0],
+            show: true,
+        });
+        let json = ed.save_json(std::path::PathBuf::from("views.f3d")).unwrap();
+        // Changing the views doesn't make the scene unsaved.
+        ed.layout = ViewLayout::Single;
+        assert!(!ed.is_dirty());
+
+        let mut other = Editor::new(Scene::new());
+        other.open_json(&json, std::path::PathBuf::from("views.f3d")).unwrap();
+        assert_eq!(other.layout, ViewLayout::ThreeLeft);
+        assert_eq!(other.active_view, ViewKind::Right);
+        let cam = other.cameras[ViewKind::Right.index()];
+        assert_eq!(cam.kind, ViewKind::Left);
+        assert_eq!(cam.ortho_half_height, 321.0);
+        let p = other.panel(ViewKind::Right);
+        assert!(p.safe_frames && p.fx.shadows && p.display == DisplayMode::Wireframe);
+        assert_eq!(p.background.as_ref().map(|b| b.size), Some(640.0));
+        // The other panels keep their defaults.
+        assert!(!other.panel(ViewKind::Top).safe_frames);
+
+        // Files without views (older ones) open with the default views.
+        let plain = ed.scene.to_json().unwrap();
+        let mut third = Editor::new(Scene::new());
+        third.open_json(&plain, std::path::PathBuf::from("old.f3d")).unwrap();
+        assert_eq!(third.layout, ViewLayout::Single);
+        // Views that don't parse are dropped, not the scene.
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v["views"] = serde_json::json!({"layout": 42});
+        let mut fourth = Editor::new(Scene::new());
+        fourth.open_json(&v.to_string(), std::path::PathBuf::from("bad.f3d")).unwrap();
+        assert_eq!(fourth.scene.roots().len(), ed.scene.roots().len());
+    }
+
+    #[test]
+    fn undo_view_steps_back_through_navigation_and_framing() {
+        let mut ed = editor();
+        let start = ed.cameras[0];
+        ed.record_view(ViewKind::Perspective);
+        ed.cameras[0].orbit(80.0, 10.0);
+        ed.cameras[0].target += Vec3::X * 300.0;
+        let orbited = ed.cameras[0];
+        ed.frame_selected(ViewKind::Perspective);
+        let framed = ed.cameras[0];
+        assert!(ed.can_undo_view());
+        assert!(ed.undo_view());
+        assert_eq!(ed.cameras[0], orbited);
+        assert!(ed.undo_view());
+        assert_eq!(ed.cameras[0], start);
+        assert!(ed.redo_view());
+        assert!(ed.redo_view());
+        assert_eq!(ed.cameras[0], framed);
+        // Each panel has its own history.
+        ed.active_view = ViewKind::Top;
+        assert!(!ed.can_undo_view());
+        // Undo View is not an edit: the scene's undo history is untouched.
+        assert!(!ed.is_dirty());
     }
 
     #[test]

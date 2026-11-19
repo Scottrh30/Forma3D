@@ -1,19 +1,41 @@
-//! Viewport cameras: a perspective orbit camera and the three orthographic
-//! views (Top, Right, Front). Left-handed, Y-up, depth range 0..1 (wgpu).
+//! Viewport cameras: a perspective orbit camera, the six orthographic views
+//! (Top, Bottom, Left, Right, Front, Back) and two axonometric ones
+//! (Isometric, Dimetric). Left-handed, Y-up, depth range 0..1 (wgpu).
 
 use glam::camera::lh::{proj::directx, view};
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// A view's projection. The first four are also the four view panels
+/// ([`ViewKind::ALL`]); any panel can show any projection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ViewKind {
     Perspective,
     Top,
     Right,
     Front,
+    Left,
+    Back,
+    Bottom,
+    Isometric,
+    Dimetric,
 }
 
 impl ViewKind {
+    /// The four view panels (named after the projection each starts with).
     pub const ALL: [ViewKind; 4] = [ViewKind::Perspective, ViewKind::Top, ViewKind::Right, ViewKind::Front];
+
+    /// Every projection a panel can show.
+    pub const PROJECTIONS: [ViewKind; 9] = [
+        ViewKind::Perspective,
+        ViewKind::Left,
+        ViewKind::Right,
+        ViewKind::Front,
+        ViewKind::Back,
+        ViewKind::Top,
+        ViewKind::Bottom,
+        ViewKind::Isometric,
+        ViewKind::Dimetric,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -21,6 +43,25 @@ impl ViewKind {
             ViewKind::Top => "Top",
             ViewKind::Right => "Right",
             ViewKind::Front => "Front",
+            ViewKind::Left => "Left",
+            ViewKind::Back => "Back",
+            ViewKind::Bottom => "Bottom",
+            ViewKind::Isometric => "Isometric",
+            ViewKind::Dimetric => "Dimetric",
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            ViewKind::Perspective => "perspective",
+            ViewKind::Top => "top",
+            ViewKind::Right => "right",
+            ViewKind::Front => "front",
+            ViewKind::Left => "left",
+            ViewKind::Back => "back",
+            ViewKind::Bottom => "bottom",
+            ViewKind::Isometric => "isometric",
+            ViewKind::Dimetric => "dimetric",
         }
     }
 
@@ -28,23 +69,59 @@ impl ViewKind {
         self != ViewKind::Perspective
     }
 
-    /// Position in [`ViewKind::ALL`].
+    /// Isometric and Dimetric: parallel views from above at an angle.
+    pub fn is_axonometric(self) -> bool {
+        matches!(self, ViewKind::Isometric | ViewKind::Dimetric)
+    }
+
+    /// Looks at the floor from above or at an angle (the floor catches
+    /// shadows; the grid lies on it).
+    pub fn sees_floor(self) -> bool {
+        matches!(self, ViewKind::Perspective | ViewKind::Top | ViewKind::Isometric | ViewKind::Dimetric)
+    }
+
+    /// The world plane the grid lies in and the pens draw on: its normal.
+    pub fn plane_normal(self) -> Vec3 {
+        match self {
+            ViewKind::Front | ViewKind::Back => Vec3::Z,
+            ViewKind::Right | ViewKind::Left => Vec3::X,
+            _ => Vec3::Y,
+        }
+    }
+
+    /// Position of a panel in [`ViewKind::ALL`] (other projections map to
+    /// the panel whose plane they share).
     pub fn index(self) -> usize {
-        self as usize
+        match self {
+            ViewKind::Perspective | ViewKind::Isometric | ViewKind::Dimetric => 0,
+            ViewKind::Top | ViewKind::Bottom => 1,
+            ViewKind::Right | ViewKind::Left => 2,
+            ViewKind::Front | ViewKind::Back => 3,
+        }
     }
 
     /// Forward and up vectors of an orthographic view.
     fn ortho_basis(self) -> (Vec3, Vec3) {
         match self {
             ViewKind::Top => (Vec3::NEG_Y, Vec3::Z),
+            ViewKind::Bottom => (Vec3::Y, Vec3::NEG_Z),
             // Looks along +X, so +Z runs right-to-left on screen, as in Cinema 4D.
             ViewKind::Right => (Vec3::X, Vec3::Y),
+            ViewKind::Left => (Vec3::NEG_X, Vec3::Y),
+            ViewKind::Back => (Vec3::NEG_Z, Vec3::Y),
+            // From the front right, 35.26° down (true isometric).
+            ViewKind::Isometric => (Vec3::new(-1.0, -1.0, 1.0).normalize(), Vec3::Y),
+            // From the front right at 45° round and about 20.7° down.
+            ViewKind::Dimetric => {
+                let (pitch, yaw) = (20.705f32.to_radians(), 45f32.to_radians());
+                (Vec3::new(-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos()), Vec3::Y)
+            }
             ViewKind::Front | ViewKind::Perspective => (Vec3::Z, Vec3::Y),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Camera {
     pub kind: ViewKind,
     pub target: Vec3,
@@ -115,7 +192,8 @@ impl Camera {
     }
 
     pub fn view(&self) -> Mat4 {
-        view::look_at_mat4(self.eye(), self.eye() + self.forward(), self.up_hint())
+        // look_to, not look_at: eye + forward loses precision far from the origin.
+        view::look_to_mat4(self.eye(), self.forward(), self.up_hint())
     }
 
     fn clip_planes(&self) -> (f32, f32) {
@@ -135,6 +213,25 @@ impl Camera {
                 directx::orthographic(-h * aspect, h * aspect, -h, h, near, far)
             }
         }
+    }
+
+    /// The same view with another projection, keeping what it looks at.
+    pub fn with_kind(&self, kind: ViewKind) -> Camera {
+        let mut c = *self;
+        if c.kind == kind {
+            return c;
+        }
+        match (c.kind, kind) {
+            (ViewKind::Perspective, _) => {
+                c.ortho_half_height = (c.distance * (c.fov_y * 0.5).tan()).clamp(1.0, 500_000.0);
+            }
+            (_, ViewKind::Perspective) => {
+                c.distance = (c.ortho_half_height / (c.fov_y * 0.5).tan()).clamp(5.0, 500_000.0);
+            }
+            _ => {}
+        }
+        c.kind = kind;
+        c
     }
 
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
@@ -371,6 +468,41 @@ mod tests {
         cam.zoom(f32::NAN);
         cam.zoom(-1.0);
         assert_eq!(cam.distance, d);
+    }
+
+    #[test]
+    fn every_projection_looks_at_its_target_with_a_sane_basis() {
+        for kind in ViewKind::PROJECTIONS {
+            let cam = Camera::new(kind);
+            let ndc = cam.project(cam.target, 1.4).unwrap();
+            assert!(ndc.x.abs() < 1e-3 && ndc.y.abs() < 1e-3, "{kind:?} {ndc:?}");
+            assert!((cam.right().length() - 1.0).abs() < 1e-4 && (cam.up().length() - 1.0).abs() < 1e-4, "{kind:?}");
+            assert!(cam.right().dot(cam.forward()).abs() < 1e-4, "{kind:?}");
+        }
+        // Opposite views look opposite ways.
+        for (a, b) in [(ViewKind::Left, ViewKind::Right), (ViewKind::Front, ViewKind::Back), (ViewKind::Top, ViewKind::Bottom)] {
+            assert!((Camera::new(a).forward() + Camera::new(b).forward()).length() < 1e-5);
+        }
+        // Isometric: all three axes shorten equally.
+        let iso = Camera::new(ViewKind::Isometric);
+        let len = |v: Vec3| {
+            let a = iso.project(iso.target, 1.0).unwrap();
+            let b = iso.project(iso.target + v * 100.0, 1.0).unwrap();
+            (b - a).truncate().length()
+        };
+        assert!((len(Vec3::X) - len(Vec3::Y)).abs() < 1e-3 && (len(Vec3::Y) - len(Vec3::Z)).abs() < 1e-3);
+        // Up stays up in the axonometric views.
+        let b = iso.project(iso.target + Vec3::Y * 100.0, 1.0).unwrap();
+        assert!(b.y > 0.0);
+    }
+
+    #[test]
+    fn switching_projection_keeps_the_framing() {
+        let p = Camera::new(ViewKind::Perspective);
+        let o = p.with_kind(ViewKind::Front);
+        assert_eq!(o.target, p.target);
+        let back = o.with_kind(ViewKind::Perspective);
+        assert!((back.distance - p.distance).abs() < 0.5);
     }
 
     #[test]

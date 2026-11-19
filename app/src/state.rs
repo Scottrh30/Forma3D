@@ -51,6 +51,8 @@ pub struct App {
     pub log: RwSignal<Vec<LogEntry>>,
     pub ask: RwSignal<Option<Ask>>,
     pub about: RwSignal<bool>,
+    /// The Configure View dialog (the active panel's settings).
+    pub view_settings: RwSignal<bool>,
     pub prefs_open: RwSignal<bool>,
     pub customize_open: RwSignal<bool>,
     pub clipboard: StoredValue<Option<Scene>, LocalStorage>,
@@ -103,6 +105,7 @@ impl App {
             log: RwSignal::new(Vec::new()),
             ask: RwSignal::new(None),
             about: RwSignal::new(false),
+            view_settings: RwSignal::new(false),
             prefs_open: RwSignal::new(false),
             customize_open: RwSignal::new(false),
             clipboard: StoredValue::new_local(None),

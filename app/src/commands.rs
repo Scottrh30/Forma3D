@@ -162,6 +162,16 @@ pub enum Cmd {
     FrameDefault,
     Camera(ViewKind),
     FourViews,
+    /// Shows a projection (Left, Back, Isometric...) in the active panel.
+    Projection(ViewKind),
+    Layout(ViewLayout),
+    UndoView,
+    RedoView,
+    ToggleSafeFrames,
+    /// The active panel's settings (background image and the rest).
+    ConfigureView,
+    LoadBackground,
+    ClearBackground,
     Filter(ViewFilter),
     Display(DisplayMode),
     ToggleGrid,
@@ -260,12 +270,21 @@ pub fn mesh_tool_icon(t: MeshTool) -> &'static str {
     }
 }
 
+pub fn projection_icon(k: ViewKind) -> &'static str {
+    match k {
+        ViewKind::Perspective => "view-persp",
+        ViewKind::Isometric | ViewKind::Dimetric => "view-axo",
+        _ => "view-ortho",
+    }
+}
+
 pub fn fx_icon(fx: ViewFx) -> &'static str {
     match fx {
         ViewFx::PostEffects => "fx-post",
         ViewFx::Tessellation => "fx-tess",
         ViewFx::Shadows => "fx-shadow",
         ViewFx::Reflections => "fx-reflect",
+        ViewFx::Ssr => "fx-ssr",
         ViewFx::Ssao => "fx-ssao",
         ViewFx::BackfaceCulling => "fx-backface",
     }
@@ -869,6 +888,25 @@ pub fn all() -> Vec<Info> {
         "quad",
         "quad panel",
     );
+    for k in ViewKind::PROJECTIONS {
+        add(
+            Cmd::Projection(k),
+            &format!("view.projection_{}", k.id()),
+            k.label(),
+            "View",
+            projection_icon(k),
+            "camera projection view parallel orthographic axonometric",
+        );
+    }
+    for l in ViewLayout::ALL {
+        add(Cmd::Layout(l), &format!("view.layout_{}", l.id()), l.label(), "View", l.icon(), "panel layout split views");
+    }
+    add(Cmd::UndoView, "view.undo_view", "Undo View", "View", "view-undo", "camera back previous history");
+    add(Cmd::RedoView, "view.redo_view", "Redo View", "View", "view-redo", "camera forward history");
+    add(Cmd::ToggleSafeFrames, "view.safe_frames", "Safe Frames", "View", "safe-frames", "render frame title action safe border");
+    add(Cmd::ConfigureView, "view.configure", "Configure View...", "View", "settings", "view settings background image reference");
+    add(Cmd::LoadBackground, "view.load_background", "Load Background Image...", "View", "picture", "reference blueprint image back");
+    add(Cmd::ClearBackground, "view.clear_background", "Remove Background Image", "View", "close", "reference blueprint image");
     add(
         Cmd::FrameDefault,
         "view.frame_default",
@@ -1161,6 +1199,9 @@ pub fn default_shortcuts() -> Vec<(Cmd, Binding)> {
         (Cmd::FrameSelected, one(S::key("S"))),
         (Cmd::FrameAll, one(S::key("H"))),
         (Cmd::FourViews, one(S::key("F5"))),
+        (Cmd::UndoView, one(S::alt("Z"))),
+        (Cmd::RedoView, one(S::alt("Y"))),
+        (Cmd::ConfigureView, one(S::shift("V"))),
         (Cmd::Commander, one(S::shift("C"))),
         (Cmd::ToggleAxisMode, one(S::key("L"))),
         (Cmd::ToggleSnap, one(S::shift("S"))),
@@ -1313,10 +1354,17 @@ pub fn state_of(
             Some(ed.layout == ViewLayout::Single && ed.single_view == k),
         ),
         Cmd::FourViews => (true, Some(ed.layout == ViewLayout::Quad)),
-        Cmd::Display(m) => (true, Some(ed.display == m)),
-        Cmd::ToggleGrid => (true, Some(ed.view_opts.grid)),
-        Cmd::ToggleCompass => (true, Some(ed.view_opts.compass)),
-        Cmd::ViewFx(fx) => (true, Some(ed.view_opts.fx.get(fx))),
+        Cmd::Layout(l) => (true, Some(ed.layout == l)),
+        Cmd::Projection(k) => (true, Some(ed.cameras[ed.active_view.index()].kind == k)),
+        Cmd::UndoView => (ed.can_undo_view(), None),
+        Cmd::RedoView => (ed.can_redo_view(), None),
+        Cmd::ToggleSafeFrames => (true, Some(ed.active_panel().safe_frames)),
+        Cmd::ClearBackground => (ed.active_panel().background.is_some(), None),
+        Cmd::Display(m) => (true, Some(ed.active_panel().display == m)),
+        Cmd::ToggleGrid => (true, Some(ed.active_panel().grid)),
+        Cmd::ToggleCompass => (true, Some(ed.active_panel().compass)),
+        Cmd::ViewFx(ViewFx::Tessellation) => (true, Some(ed.view_opts.tessellation)),
+        Cmd::ViewFx(fx) => (true, Some(ed.active_panel().fx.get(fx))),
         Cmd::ToggleSolo => (true, Some(ed.view_opts.solo)),
         Cmd::ToggleTimeline => (true, Some(timeline)),
         Cmd::Minimize | Cmd::ToggleMaximize => (crate::host::in_tauri(), None),
@@ -1381,6 +1429,8 @@ pub enum AppAction {
     StopRender,
     RenderSettings,
     AddToQueue,
+    ConfigureView,
+    LoadBackground,
 }
 
 /// Runs a command on the editor alone. Returns what the app must do for
@@ -1414,6 +1464,8 @@ pub fn execute(ed: &mut Editor, cmd: Cmd) -> Option<AppAction> {
         Cmd::Commander => return Some(AppAction::Commander),
         Cmd::CustomizeCommands => return Some(AppAction::CustomizeCommands),
         Cmd::About => return Some(AppAction::About),
+        Cmd::ConfigureView => return Some(AppAction::ConfigureView),
+        Cmd::LoadBackground => return Some(AppAction::LoadBackground),
         Cmd::ToggleAxisMode => {
             ed.axis_mode = !ed.axis_mode;
             ed.status = if ed.axis_mode {
@@ -1586,7 +1638,9 @@ pub fn execute(ed: &mut Editor, cmd: Cmd) -> Option<AppAction> {
         }
         Cmd::FrameDefault => {
             let v = ed.active_view;
-            ed.cameras[v.index()] = forma3d_core::camera::Camera::new(v);
+            ed.record_view(v);
+            let kind = ed.cameras[v.index()].kind;
+            ed.cameras[v.index()] = forma3d_core::camera::Camera::new(kind);
         }
         Cmd::Filter(f) => {
             let flag = f.flag(&mut ed.view_opts);
@@ -1687,15 +1741,50 @@ pub fn execute(ed: &mut Editor, cmd: Cmd) -> Option<AppAction> {
         Cmd::FrameSelected => ed.frame_selected(ed.active_view),
         Cmd::FrameAll => ed.frame_all(ed.active_view),
         Cmd::Camera(k) => {
+            if ed.layout != ViewLayout::Single {
+                ed.last_multi = ed.layout;
+            }
             ed.layout = ViewLayout::Single;
             ed.single_view = k;
             ed.active_view = k;
         }
         Cmd::FourViews => ed.layout = ViewLayout::Quad,
-        Cmd::Display(m) => ed.display = m,
-        Cmd::ToggleGrid => ed.view_opts.grid = !ed.view_opts.grid,
-        Cmd::ToggleCompass => ed.view_opts.compass = !ed.view_opts.compass,
-        Cmd::ViewFx(fx) => ed.view_opts.fx.toggle(fx),
+        Cmd::Layout(l) => {
+            if ed.layout != ViewLayout::Single {
+                ed.last_multi = ed.layout;
+            }
+            ed.layout = l;
+            if l == ViewLayout::Single {
+                ed.single_view = ed.active_view;
+            } else if !ed.shown_panels().contains(&ed.active_view) {
+                ed.active_view = ed.shown_panels()[0];
+            }
+        }
+        Cmd::Projection(k) => ed.set_projection(k),
+        Cmd::UndoView => {
+            if !ed.undo_view() {
+                ed.status = "No earlier view to go back to".to_owned();
+            }
+        }
+        Cmd::RedoView => {
+            ed.redo_view();
+        }
+        Cmd::ToggleSafeFrames => {
+            let p = ed.active_panel_mut();
+            p.safe_frames = !p.safe_frames;
+        }
+        Cmd::ClearBackground => ed.active_panel_mut().background = None,
+        Cmd::Display(m) => ed.active_panel_mut().display = m,
+        Cmd::ToggleGrid => {
+            let p = ed.active_panel_mut();
+            p.grid = !p.grid;
+        }
+        Cmd::ToggleCompass => {
+            let p = ed.active_panel_mut();
+            p.compass = !p.compass;
+        }
+        Cmd::ViewFx(ViewFx::Tessellation) => ed.view_opts.tessellation = !ed.view_opts.tessellation,
+        Cmd::ViewFx(fx) => ed.active_panel_mut().fx.toggle(fx),
         Cmd::ToggleSolo => ed.view_opts.solo = !ed.view_opts.solo,
         Cmd::PlayPause => {
             let t = &mut ed.timeline;
@@ -1726,6 +1815,14 @@ fn view_only(c: Cmd) -> bool {
             | Cmd::FrameDefault
             | Cmd::Camera(_)
             | Cmd::FourViews
+            | Cmd::Layout(_)
+            | Cmd::Projection(_)
+            | Cmd::UndoView
+            | Cmd::RedoView
+            | Cmd::ToggleSafeFrames
+            | Cmd::ClearBackground
+            | Cmd::ConfigureView
+            | Cmd::LoadBackground
             | Cmd::Filter(_)
             | Cmd::Display(_)
             | Cmd::ToggleGrid
@@ -1878,6 +1975,8 @@ fn exec(app: App, c: Cmd, confirmed: bool) {
         AppAction::Commander => app.commander.set(true),
         AppAction::CustomizeCommands => app.customize_open.set(true),
         AppAction::About => app.about.set(true),
+        AppAction::ConfigureView => app.view_settings.set(true),
+        AppAction::LoadBackground => crate::viewcfg::load_background(app),
         AppAction::Render(t) => crate::render::start(app, t),
         AppAction::SaveAsset => save_selection_asset(app),
         AppAction::SaveMaterialAsset => save_material_asset(app),

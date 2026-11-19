@@ -259,6 +259,34 @@ await commander('new material');
 await tab('Materials');
 await shot('30-material-editor');
 
+// Viewport: shadows from every light, area lights, reflections, layouts,
+// projections, Safe Frames and Configure View.
+await commander('area light');
+await commander('spot light');
+await commander('omni light');
+await commander('frame all');
+await commander('shadows');
+await shot('32-shadows-every-light');
+await commander('screen-space reflections');
+await shot('33-ssr');
+await commander('safe frames');
+await shot('34-safe-frames');
+await commander('3 views, large left');
+await shot('35-three-views');
+await page.mouse.click(box.x + box.width * 0.8, box.y + box.height * 0.25);
+await commander('isometric');
+await shot('36-isometric');
+await page.mouse.move(cx, cy);
+await page.mouse.down({ button: 'right' });
+await page.mouse.move(cx + 80, cy - 30, { steps: 8 });
+await page.mouse.up({ button: 'right' });
+await commander('undo view');
+await shot('37-undo-view');
+await commander('configure view');
+await shot('38-configure-view');
+await page.mouse.click(8, 990);
+await commander('1 view');
+
 await tab('Console');
 await shot('31-console');
 

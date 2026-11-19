@@ -32,3 +32,4 @@ pub mod spline;
 pub mod takes;
 pub mod texture;
 pub mod tessellate;
+pub mod views;

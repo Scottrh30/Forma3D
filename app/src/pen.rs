@@ -18,11 +18,10 @@ const ACTIVE: &str = SELECTED;
 const SNAP_PX: f32 = 10.0;
 
 fn drawing_plane(kind: ViewKind, wp: &forma3d_core::scene::Workplane) -> Vec3 {
-    match kind {
-        ViewKind::Front => Vec3::Z,
-        ViewKind::Right => Vec3::X,
-        ViewKind::Top => Vec3::Y,
-        ViewKind::Perspective => wp.normal(),
+    if kind == ViewKind::Perspective || kind.is_axonometric() {
+        wp.normal()
+    } else {
+        kind.plane_normal()
     }
 }
 
@@ -159,7 +158,7 @@ fn spline_pen(
     let anchor = ed
         .pen_spline()
         .map(|(_, _, w)| w.w_axis.truncate())
-        .unwrap_or(if kind == ViewKind::Perspective {
+        .unwrap_or(if kind == ViewKind::Perspective || kind.is_axonometric() {
             ed.scene.workplane.pos
         } else {
             Vec3::ZERO
@@ -186,7 +185,7 @@ fn spline_pen(
                     ed.pen_add_spline_point(q);
                 }
             }
-            ed.active_view = kind;
+            ed.active_view = v.slot;
         }
         if inp.drag_started
             && let Some(start) = inp.press_origin
@@ -205,7 +204,7 @@ fn spline_pen(
             if let Some(pen) = ed.pen.as_mut() {
                 pen.drag = drag;
             }
-            ed.active_view = kind;
+            ed.active_view = v.slot;
         }
         let drag = ed.pen.as_ref().and_then(|q| q.drag);
         if let (Some(drag), Some(m), Some((_, s, world))) = (drag, mouse, ed.pen_spline())
@@ -403,7 +402,7 @@ fn polygon_pen(
     });
 
     let normal = drawing_plane(kind, &ed.scene.workplane);
-    let plane_point = if kind == ViewKind::Perspective {
+    let plane_point = if kind == ViewKind::Perspective || kind.is_axonometric() {
         ed.scene.workplane.pos
     } else {
         Vec3::ZERO
@@ -439,7 +438,7 @@ fn polygon_pen(
         None
     };
     if clicked && mouse.is_some() {
-        ed.active_view = kind;
+        ed.active_view = v.slot;
         if closes {
             let c = pending_centre(ed);
             ed.pen_commit_polygon(toward_viewer(v, c));
