@@ -105,6 +105,30 @@ await commander('4 views');
 await shot('09-four-views');
 note(`status: ${await status()}`);
 
+// Import an OBJ with its MTL (a red pyramid) through File > Import.
+fs.writeFileSync(`${out}/pyramid.obj`, 'mtllib pyramid.mtl\no Pyramid\nv -100 0 -100\nv 100 0 -100\nv 100 0 100\nv -100 0 100\nv 0 150 0\nusemtl Brick\nf 1 2 3 4\nf 1 5 2\nf 2 5 3\nf 3 5 4\nf 4 5 1\n');
+fs.writeFileSync(`${out}/pyramid.mtl`, 'newmtl Brick\nKd 0.8 0.2 0.1\n');
+try {
+  await page.mouse.click(5, 300);
+  const chooser = page.waitForEvent('filechooser', { timeout: 10000 });
+  await commander('import');
+  await (await chooser).setFiles([`${out}/pyramid.obj`, `${out}/pyramid.mtl`]);
+  await wait(1000);
+  await shot('13-import-dialog');
+  await page.locator('.iodlg .btn.primary').click();
+  await wait(1500);
+  note(`import: ${await status()}`);
+  await commander('frame all');
+  await shot('14-imported-pyramid');
+  await commander('export');
+  await wait(500);
+  note(`export formats: ${(await page.locator('.iodlg select').first().locator('option').allInnerTexts()).join(', ')}`);
+  await shot('15-export-dialog');
+  await page.locator('.iodlg .btn').first().click();
+} catch (e) {
+  note(`FAIL import/export: ${e.message}`);
+}
+
 // Rough frame rate while orbiting the perspective view.
 const fps = await page.evaluate(() => new Promise(res => {
   let n = 0; const t0 = performance.now();
