@@ -24,6 +24,7 @@ mod settings;
 mod state;
 mod timeline;
 mod viewcfg;
+mod iodlg;
 mod viewport;
 mod vinput;
 mod worker;
@@ -201,6 +202,7 @@ fn Root() -> impl IntoView {
             <Dialogs />
             <render::RenderSettingsDialog />
             <viewcfg::ConfigureView />
+            <iodlg::IoDialog />
         </div>
     }
 }

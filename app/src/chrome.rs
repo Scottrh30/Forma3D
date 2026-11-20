@@ -86,6 +86,8 @@ pub fn menu(name: &str) -> Vec<Entry> {
             C(Cmd::SaveAs),
             Sep,
             C(Cmd::Merge),
+            C(Cmd::Import),
+            C(Cmd::Export),
             Sep,
             C(Cmd::Quit),
         ],

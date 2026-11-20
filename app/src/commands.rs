@@ -90,6 +90,8 @@ pub enum Cmd {
     Save,
     SaveAs,
     Merge,
+    Import,
+    Export,
     Quit,
     // Edit
     Undo,
@@ -355,6 +357,22 @@ pub fn all() -> Vec<Info> {
         "File",
         "open",
         "import add scene objects",
+    );
+    add(
+        Cmd::Import,
+        "file.import",
+        "Import...",
+        "File",
+        "open",
+        "obj stl gltf glb fbx usd usda alembic abc model mesh",
+    );
+    add(
+        Cmd::Export,
+        "file.export",
+        "Export...",
+        "File",
+        "save",
+        "obj stl gltf glb fbx usd usda alembic abc model mesh 3d print",
     );
     add(
         Cmd::Quit,
@@ -1403,6 +1421,8 @@ pub enum AppAction {
     Save,
     SaveAs,
     Merge,
+    Import,
+    Export,
     Quit,
     Cut,
     Copy,
@@ -1445,6 +1465,8 @@ pub fn execute(ed: &mut Editor, cmd: Cmd) -> Option<AppAction> {
         Cmd::Close => return Some(AppAction::Close),
         Cmd::Revert => return Some(AppAction::Revert),
         Cmd::Merge => return Some(AppAction::Merge),
+        Cmd::Import => return Some(AppAction::Import),
+        Cmd::Export => return Some(AppAction::Export),
         Cmd::Cut => return Some(AppAction::Cut),
         Cmd::Copy => return Some(AppAction::Copy),
         Cmd::Paste => return Some(AppAction::Paste),
@@ -1924,6 +1946,8 @@ fn exec(app: App, c: Cmd, confirmed: bool) {
             }
         }
         AppAction::Merge => merge(app),
+        AppAction::Import => crate::iodlg::start_import(app),
+        AppAction::Export => crate::iodlg::start_export(app),
         AppAction::Save => save(app, false),
         AppAction::SaveAs => save(app, true),
         AppAction::Cut => {

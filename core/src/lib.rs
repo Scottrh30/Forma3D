@@ -14,6 +14,7 @@ pub mod editmesh;
 pub mod editor;
 pub mod generator;
 pub mod gizmo;
+pub mod io;
 pub mod history;
 pub mod layers;
 pub mod light;

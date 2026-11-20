@@ -323,6 +323,40 @@ async fn save_image(app: tauri::AppHandle, suggested_name: String, extension: St
     Ok(Some(path.display().to_string()))
 }
 
+/// The folder the last Export went to: files are written only there.
+#[derive(Default)]
+struct ChosenDir(std::sync::Mutex<Option<std::path::PathBuf>>);
+
+/// Asks where to save (Export); remembers the folder for [`write_chosen`].
+#[tauri::command]
+async fn choose_save_path(
+    app: tauri::AppHandle,
+    chosen: tauri::State<'_, ChosenDir>,
+    title: String,
+    suggested_name: String,
+    filter_name: String,
+    extension: String,
+) -> Result<Option<String>, String> {
+    let picked = app.dialog().file().set_title(&title).add_filter(&filter_name, &[extension.as_str()]).set_file_name(&suggested_name).blocking_save_file();
+    let Some(picked) = picked else { return Ok(None) };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let dir = path.parent().map(|d| d.to_path_buf()).ok_or("no folder")?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    *chosen.0.lock().map_err(|e| e.to_string())? = Some(dir);
+    Ok(Some(path.display().to_string()))
+}
+
+/// Writes one exported file (base64) into the chosen folder.
+#[tauri::command]
+fn write_chosen(chosen: tauri::State<'_, ChosenDir>, name: String, bytes: String) -> Result<(), String> {
+    let dir = chosen.0.lock().map_err(|e| e.to_string())?.clone().ok_or("no folder was chosen")?;
+    let file = std::path::Path::new(&name);
+    let only = file.file_name().filter(|n| file.components().count() == 1 && !n.is_empty()).ok_or("not a plain file name")?;
+    let data = base64::engine::general_purpose::STANDARD.decode(bytes.as_bytes()).map_err(|e| e.to_string())?;
+    let path = dir.join(only);
+    std::fs::write(&path, data).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +397,7 @@ fn main() {
         // Saved when the app quits and put back when the window opens.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(Renders::default())
+        .manage(ChosenDir::default())
         .manage(Startup(Mutex::new(files)))
         // The window is made here rather than from the config alone, so a
         // test run can open WebView2's debugging port (FORMA3D_DEBUG_PORT)
@@ -390,7 +425,9 @@ fn main() {
             write_autosave,
             render_start,
             render_cancel,
-            save_image
+            save_image,
+            choose_save_path,
+            write_chosen
         ])
         .run(tauri::generate_context!())
         .expect("Forma3D could not start");

@@ -295,7 +295,7 @@ compared (November 2026) and none was worth rewriting the interface for. Highlig
 
 ## Files, projects and the clipboard
 
-- **File menu:** New Project, Open, Close, Revert to Saved, Save, Save As, Merge Project, Quit.
+- **File menu:** New Project, Open, Close, Revert to Saved, Save, Save As, Merge Project, Import, Export, Quit.
 - **Scene files** are `.f3d` (JSON inside; Open also takes older `.json` scenes). The installer associates `.f3d`
   with Forma3D, so double-clicking one opens it; `Forma3D.exe scene.f3d` opens it from the command line. A second
   double-click hands the file to the running window instead of starting another copy, and a file that is already
@@ -307,6 +307,22 @@ compared (November 2026) and none was worth rewriting the interface for. Highlig
 - **Revert to Saved** reloads the project from its file (asks first; greyed out until the project has been saved).
 - **Merge Project** adds another scene file's objects and materials to the current project; materials identical to
   ones already there (same name and colour) are shared. It is one undo step.
+- **Import and Export** (File menu) read and write models in six formats. Both ask for the file's units
+  (millimetres, centimetres, metres, inches or feet; each format starts on its usual unit), and Export can write the
+  selected objects only. Generators, deformers and booleans are exported as the polygons you see. An import is one
+  undo step: it arrives under a new Null named after the file, selected, with its own materials.
+
+  | Format | Export | Import |
+  | --- | --- | --- |
+  | Wavefront OBJ (`.obj` + `.mtl`) | polygons in world space, one `o` per object, material colours in an MTL beside it | groups and objects, n-gons, negative indices, `usemtl` colours from an MTL picked with it |
+  | STL (`.stl`) | binary, triangles, Z up, millimetres | binary or ASCII, welded into one mesh |
+  | glTF 2.0 (`.glb`) | meshes, node transforms, PBR base colour, metalness, roughness | `.glb` or `.gltf` with embedded data: hierarchy, transforms, materials (textures are noted and left out) |
+  | FBX (`.fbx`, binary 7.4) | polygons, transforms, hierarchy, Phong/PBR colours | binary FBX 7.x: any up axis and unit, rotation orders, pivots, materials (cameras, lights, bones and animation are noted and left out) |
+  | USD (`.usda`, text) | meshes, transforms, UsdPreviewSurface materials, `metersPerUnit` | text USD: Xform/Mesh prims, every xformOp, Y or Z up, any unit, bound materials or display colours (binary `.usdc`/`.usdz` and references are not read) |
+  | Alembic (`.abc`, Ogawa) | an Xform with a PolyMesh per object, one frame | Xform, PolyMesh and SubD objects at their first frame (Alembic has no materials; HDF5 files are not read) |
+
+  Every format was checked both ways against Blender 4.2: files Forma3D writes open there with the right size,
+  place, facing and colours, and Blender's own exports of each format open in Forma3D.
 - **Edit menu:** Cut, Copy, Paste and Delete work on objects (whole hierarchies, with their materials). Pasted
   objects keep their place in the world, go to the top level and are selected. The clipboard is shared by all open
   projects, and copied objects also go on the system clipboard as scene text, so another Forma3D window can paste
@@ -462,7 +478,8 @@ All open from Window > Panels; the Model workspace has them as tabs.
   splits a polygon only when the line crosses it exactly twice (some concave n-gons are skipped).
 - Bridge chooses how loops line up by shortest total distance; it doesn't offer a manual twist control.
 - Undo still snapshots the whole scene, which gets heavy with very large meshes.
-- No import/export formats other than the JSON scene file.
+- Import/export carries geometry, transforms and material colours only: no UVs, textures, normals, cameras, lights or
+  animation. Binary USD (`.usdc`, `.usdz`), glTF with external buffers and HDF5 Alembic files are not read.
 - The timeline only moves a time cursor. There are no keyframes yet.
 - The viewport shows each material's colour only; reflections, transparency, glow and pictures show in renders.
   Pictures are projected (Cubic, Flat, Spherical, Cylindrical) because objects have no UV coordinates yet. There are

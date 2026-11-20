@@ -419,6 +419,60 @@ pub async fn pick_bytes(accept: &str) -> Result<Option<(String, Vec<u8>)>, Strin
     Ok(Some((file.name(), js_sys::Uint8Array::new(&buf).to_vec())))
 }
 
+/// Lets the user pick one or more files; their names and bytes (empty when
+/// cancelled).
+pub async fn pick_files(accept: &str) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
+    let input: web_sys::HtmlInputElement = doc.create_element("input").map_err(js_err)?.dyn_into().map_err(|_| "no input")?;
+    input.set_type("file");
+    input.set_accept(accept);
+    input.set_multiple(true);
+    let (tx, rx) = futures_channel();
+    let tx = std::rc::Rc::new(std::cell::RefCell::new(Some(tx)));
+    let tx2 = tx.clone();
+    let on_change = Closure::<dyn FnMut()>::new(move || {
+        if let Some(tx) = tx.borrow_mut().take() {
+            let _ = tx.call1(&JsValue::NULL, &JsValue::TRUE);
+        }
+    });
+    // A cancelled picker fires "cancel" where supported.
+    let on_cancel = Closure::<dyn FnMut()>::new(move || {
+        if let Some(tx) = tx2.borrow_mut().take() {
+            let _ = tx.call1(&JsValue::NULL, &JsValue::FALSE);
+        }
+    });
+    input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
+    let _ = input.add_event_listener_with_callback("cancel", on_cancel.as_ref().unchecked_ref());
+    input.click();
+    JsFuture::from(rx).await.map_err(js_err)?;
+    drop(on_change);
+    drop(on_cancel);
+    let mut out = Vec::new();
+    if let Some(list) = input.files() {
+        for i in 0..list.length() {
+            if let Some(f) = list.get(i) {
+                let buf = JsFuture::from(f.array_buffer()).await.map_err(js_err)?;
+                out.push((f.name(), js_sys::Uint8Array::new(&buf).to_vec()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Desktop: asks where to save a file; the chosen path, or None.
+pub async fn choose_save_path(title: &str, name: &str, filter: &str, extension: &str) -> Result<Option<String>, String> {
+    let v = invoke("choose_save_path", &serde_json::json!({ "title": title, "suggestedName": name, "filterName": filter, "extension": extension })).await?;
+    Ok(v.as_string())
+}
+
+/// Desktop: writes a file into the folder last chosen with
+/// [`choose_save_path`] (only a file name is accepted).
+pub async fn write_chosen(name: &str, bytes: &[u8]) -> Result<(), String> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    invoke("write_chosen", &serde_json::json!({ "name": name, "bytes": b64 })).await.map(|_| ())
+}
+
 /// A promise and the function that resolves it.
 fn futures_channel() -> (Function, Promise) {
     let mut resolve: Option<Function> = None;

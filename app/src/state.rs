@@ -53,6 +53,10 @@ pub struct App {
     pub about: RwSignal<bool>,
     /// The Configure View dialog (the active panel's settings).
     pub view_settings: RwSignal<bool>,
+    /// The Import or Export dialog, when open.
+    pub io: RwSignal<Option<crate::iodlg::IoState>>,
+    /// Files picked for Import (the model and its companions).
+    pub io_files: StoredValue<Vec<(String, Vec<u8>)>, LocalStorage>,
     pub prefs_open: RwSignal<bool>,
     pub customize_open: RwSignal<bool>,
     pub clipboard: StoredValue<Option<Scene>, LocalStorage>,
@@ -106,6 +110,8 @@ impl App {
             ask: RwSignal::new(None),
             about: RwSignal::new(false),
             view_settings: RwSignal::new(false),
+            io: RwSignal::new(None),
+            io_files: StoredValue::new_local(Vec::new()),
             prefs_open: RwSignal::new(false),
             customize_open: RwSignal::new(false),
             clipboard: StoredValue::new_local(None),
