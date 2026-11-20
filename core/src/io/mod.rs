@@ -536,3 +536,30 @@ mod tests {
         assert_eq!(export_files(Format::Gltf, &items, 0.01, "scene").unwrap()[0].0, "scene.glb");
     }
 }
+
+#[cfg(test)]
+mod scene_tests {
+    use super::*;
+
+    #[test]
+    fn an_imported_obj_keeps_its_size_in_the_scene() {
+        let obj = b"mtllib p.mtl\no Pyramid\nv -100 0 -100\nv 100 0 -100\nv 100 0 100\nv -100 0 100\nv 0 150 0\nusemtl Brick\nf 1 2 3 4\nf 1 5 2\nf 2 5 3\nf 3 5 4\nf 4 5 1\n";
+        let imported = import_with("p.obj", obj, &[("p.mtl".to_owned(), b"newmtl Brick\nKd 0.8 0.2 0.1\n".to_vec())], 1.0).unwrap();
+        let mut ed = Editor::new(Scene::new());
+        let root = add_to_scene(&mut ed.scene, &imported, "p");
+        let objs = ed.final_objects();
+        let mut lo = Vec3::splat(f32::MAX);
+        let mut hi = Vec3::splat(f32::MIN);
+        let mut tris = 0;
+        for o in objs.iter().filter(|o| o.id != root) {
+            for v in &o.mesh.vertices {
+                let p = o.world.transform_point3(Vec3::from(v.pos));
+                lo = lo.min(p);
+                hi = hi.max(p);
+            }
+            tris += o.mesh.indices.len() / 3;
+        }
+        assert_eq!(tris, 6);
+        assert!((hi - lo - Vec3::new(200.0, 150.0, 200.0)).length() < 0.01, "{lo} {hi}");
+    }
+}
